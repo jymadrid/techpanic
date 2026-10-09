@@ -37,7 +37,7 @@ python -m techpanic [选项]
 
 | 参数 | 作用 |
 |---|---|
-| `--data-dir PATH` | 数据目录（缓存 / 输出 / 日志），默认 `./data` |
+| `--data-dir PATH` | 数据目录（缓存 / 输出），默认 `./data` |
 | `--config PATH` | 配置文件路径，默认 `<数据目录>/config.toml` |
 | `--offline` | 只用本地缓存，**零 HTTP 请求** |
 | `--refresh` | 忽略缓存有效期，强制重新抓取 |

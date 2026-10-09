@@ -28,6 +28,7 @@ from .errors import (
     EXIT_INTERRUPTED,
     EXIT_NO_DATA,
     EXIT_OK,
+    EXIT_USAGE,
     ConfigError,
     DependencyError,
     TechpanicError,
@@ -52,15 +53,29 @@ EPILOG = """示例
 """
 
 
+class _ArgumentParser(argparse.ArgumentParser):
+    """让 argparse 的参数错误也返回退出码 5，而不是它默认的 2。
+
+    为什么必须改：本项目的退出码契约里 **2 = 正常降级**（例如 QVIX 滞后 1 天，
+    这是每天的常态）。argparse 默认在参数错误时也退 2，于是「用户敲错一个
+    参数」和「数据部分陈旧」在脚本里**无法区分** —— 定时任务会把参数写错
+    当成正常降级而放过。文档一直写"5 = 参数错误"，代码却没有兑现。
+    """
+
+    def error(self, message: str) -> None:  # type: ignore[override]
+        self.print_usage(sys.stderr)
+        self.exit(EXIT_USAGE, f"{self.prog}: 参数错误：{message}\n")
+
+
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(
+    p = _ArgumentParser(
         prog="techpanic",
         description=DESCRIPTION,
         epilog=EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     p.add_argument("--version", action="version", version=f"techpanic {__version__}")
-    p.add_argument("--data-dir", metavar="PATH", help="数据目录（缓存/输出/日志），默认 ./data")
+    p.add_argument("--data-dir", metavar="PATH", help="数据目录（缓存/输出），默认 ./data")
     p.add_argument("--config", metavar="PATH", help="配置文件路径，默认 <数据目录>/config.toml")
     p.add_argument("--offline", action="store_true", help="只用本地缓存，不发起任何网络请求")
     p.add_argument("--refresh", action="store_true", help="忽略缓存，强制重新抓取")
@@ -258,8 +273,8 @@ def main(argv: list[str] | None = None) -> int:
         ui.err(f"发生未预期的错误：{type(exc).__name__}: {exc}")
         ui.hint(
             "1) 先重试一次：python -m techpanic\n"
-            "   2) 加 --debug 查看完整堆栈；\n"
-            "   3) 到 GitHub Issues 反馈，并附上 data/logs/ 下最新的日志文件。"
+            "   2) 用 python -m techpanic --debug 复现并复制完整堆栈；\n"
+            "   3) 到 GitHub Issues 反馈，把上面的堆栈一并贴上。"
         )
         if args.debug:
             traceback.print_exc()

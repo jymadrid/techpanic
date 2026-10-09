@@ -139,6 +139,15 @@ class AppConfig:
 
     @property
     def log_dir(self) -> Path:
+        """预留的日志目录 —— **本项目目前不写任何日志文件**。
+
+        诊断信息一律直接打印到 stderr（含每个数据源的失败原因），
+        需要完整堆栈时用 --debug。
+
+        保留这个属性和目录是因为：早期文档与错误提示都指向 data/logs/，
+        但代码从不写入，导致用户按提示找不到任何东西。现在提示已改，
+        这里保留目录本身以免破坏已有用户的目录结构约定。
+        """
         return self.data_dir / "logs"
 
     @property

@@ -59,7 +59,7 @@ class NoDataError(TechpanicError):
         return (
             "1) 确认网络可用后重试：python -m techpanic；\n"
             "   2) 中国大陆网络建议在 config.toml 中设置 proxy；\n"
-            "   3) 查看日志了解每个数据源的具体失败原因：data/logs/"
+            "   3) 逐源诊断到底是哪个数据源不通：python -m techpanic --check"
         )
 
 

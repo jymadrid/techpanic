@@ -79,3 +79,46 @@ def test_version_flag():
     p = _run("--version")
     assert p.returncode == 0
     assert "techpanic" in p.stdout.decode("utf-8")
+
+# ---------------------------------------------------------------- 编码契约
+#
+# 下面三条对应一次真实事故：中文 Windows 的默认代码页是 GBK(cp936)。
+#   * --json 写出的是 GBK 字节流 → 下游 json.loads(utf-8) 在「科创」处
+#     UnicodeDecodeError（0xBF 0xC6 不是合法 UTF-8）；
+#   * 界面里的「⚠」在 cp936 里没有映射 → stdout 一旦重定向/接管道，
+#     直接抛 UnicodeEncodeError，整个进程退 1、报告只印一半、产物只剩 4/7；
+#   * argparse 参数错误默认退 2，与「正常降级」撞码。
+# 这些**只在中文 Windows 上复现**，CI 只跑 ubuntu 时永远发现不了。
+
+
+def test_json_bytes_are_valid_utf8(seeded_data_dir):
+    """--json 的 stdout 必须能被严格按 UTF-8 解析。"""
+    p = _run("--offline", "--json", "--data-dir", str(seeded_data_dir))
+    text = p.stdout.decode("utf-8", errors="strict")  # 严格解码，不宽容
+    payload = json.loads(text)
+    assert payload["schema"] == "v1"
+    assert "科创" in text or "创业板" in text  # 中文必须真的在里面
+
+
+def test_redirected_human_output_is_complete(seeded_data_dir):
+    """人类可读输出被重定向时不得崩溃，且报告必须完整。
+
+    旧实现在这里退 1，且因为「⚠」无法用 cp936 编码而只写出部分报告。
+    """
+    p = _run("--offline", "--no-color", "--data-dir", str(seeded_data_dir))
+    assert p.returncode in (0, 2), f"重定向时异常退出：{p.returncode}"
+    body = p.stdout.decode("utf-8", errors="strict")
+    assert "恐慌指数" in body
+    assert body.count("PI =") >= 2, "报告似乎只打印了一部分"
+
+
+def test_bad_argument_exits_5_not_2():
+    """参数错误必须是 5，不能与「正常降级」的 2 撞码。
+
+    本项目的 2 表示「部分降级」（QVIX 滞后，每天都会发生）。
+    撞码会让定时任务把「参数写错」当成「数据略旧」而放过。
+    """
+    p = _run("--definitely-not-a-flag")
+    assert p.returncode == 5, f"参数错误应退 5，实际 {p.returncode}"
+    assert "参数错误" in p.stderr.decode("utf-8", errors="replace")
+

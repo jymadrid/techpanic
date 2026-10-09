@@ -84,7 +84,7 @@
 
 - 缓存：`data/cache/`
 - 输出：`data/output/`
-- 日志：`data/logs/`
+- 日志：**本项目不写日志文件**。诊断信息直接打在终端（每个数据源的失败原因都在里面），需要完整堆栈时加 `--debug`
 - 溯源记录：`data/cache/_manifest.json`
 
 全部在项目目录内，删掉 `data/` 即可重置。
