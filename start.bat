@@ -1,7 +1,8 @@
 @echo off
+setlocal EnableExtensions DisableDelayedExpansion
 chcp 65001 >nul
-setlocal enabledelayedexpansion
 cd /d "%~dp0"
+if errorlevel 1 exit /b 4
 
 echo.
 echo   ============================================================
@@ -9,87 +10,101 @@ echo     科技板块恐慌指数 PI  ^|  一键运行
 echo   ============================================================
 echo.
 
-rem ---- 1. 找 Python ----
+rem Reuse the project environment before looking for system Python.
+set "VPY=%~dp0.venv\Scripts\python.exe"
+if exist "%VPY%" goto environment_ready
 set "PY="
-where py >nul 2>nul && set "PY=py -3"
-if not defined PY ( where python >nul 2>nul && set "PY=python" )
-if not defined PY (
-  echo   [错误] 没找到 Python。
-  echo.
-  echo   请先安装 Python 3.12 或更高版本：https://www.python.org/downloads/
-  echo   安装时务必勾选 "Add Python to PATH"。
-  echo.
-  pause
-  exit /b 4
-)
+where py >nul 2>nul
+if not errorlevel 1 set "PY=py -3"
+if defined PY goto create_environment
+where python >nul 2>nul
+if not errorlevel 1 set "PY=python"
+if not defined PY goto no_python
 
-rem ---- 2. 建/复用虚拟环境 ----
-if not exist ".venv\Scripts\python.exe" (
-  echo   [1/3] 首次运行，正在创建独立环境（约 1 分钟）...
-  %PY% -m venv .venv
-  if errorlevel 1 (
-    echo   [错误] 创建虚拟环境失败。请确认 Python 安装完整。
-    pause
-    exit /b 4
-  )
-) else (
-  echo   [1/3] 环境已就绪
-)
+:create_environment
+echo   [1/3] 首次运行，正在创建独立环境...
+%PY% -m venv .venv
+if errorlevel 1 goto environment_failed
+goto check_version
 
-set "VPY=.venv\Scripts\python.exe"
+:environment_ready
+echo   [1/3] 环境已就绪
 
-rem ---- 2b. 校验 Python 版本（依赖要求 >=3.12，且用到 3.11+ 的 tomllib） ----
-"%~dp0.venv\Scripts\python.exe" -c "import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)"
-if errorlevel 1 (
-  echo   [错误] 需要 Python 3.12 或更高版本，但当前是：
-  "%~dp0.venv\Scripts\python.exe" -V
-  echo   请删除 .venv 目录后，用 3.12+ 重新双击本脚本。
-  pause
-  exit /b 4
-)
+:check_version
+"%VPY%" -c "import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)"
+if errorlevel 1 goto wrong_version
 
-rem ---- 3. 装依赖（首次，或旧标记存在但包未安装） ----
-set "NEED_INSTALL="
-if not exist ".venv\.techpanic-installed" set "NEED_INSTALL=1"
+rem Bootstrap pip offline when an existing environment has no pip.
+"%VPY%" -m pip --version >nul 2>nul
+if not errorlevel 1 goto check_installation
+echo   [2/3] 当前环境缺少 pip，正在使用 Python 内置 ensurepip 修复...
+"%VPY%" -m ensurepip --upgrade
+if errorlevel 1 goto pip_failed
+"%VPY%" -m pip --version >nul 2>nul
+if errorlevel 1 goto pip_failed
+
+:check_installation
+if not exist ".venv\.techpanic-installed" goto install_dependencies
 "%VPY%" -m techpanic --version >nul 2>nul
-if errorlevel 1 set "NEED_INSTALL=1"
-if defined NEED_INSTALL (
-  echo   [2/3] 正在安装依赖（首次约 2-5 分钟）...
-  "%VPY%" -m pip install --upgrade pip --quiet
-  "%VPY%" -m pip install -r requirements.txt --quiet
-  if errorlevel 1 (
-    echo.
-    echo   [错误] 依赖安装失败。常见原因：
-    rem 注意：本块在 if (...) 内，括号必须转义为 ^)，否则 cmd 会提前
-    rem 关闭括号块并以 rc=255 中止 —— 这就是「双击一闪而过」的真实原因。
-    echo     1^) 网络不通 —— 试试国内镜像：
-    echo        "%VPY%" -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
-    echo     2^) Python 版本过低 —— 需要 3.12 以上。
-    echo.
-    pause
-    exit /b 4
-  )
-  echo ok> ".venv\.techpanic-installed"
-) else (
-  echo   [2/3] 依赖已就绪
-)
+if errorlevel 1 goto install_dependencies
+echo   [2/3] 依赖已就绪
+goto run_project
 
-rem ---- 4. 跑 ----
-echo   [3/3] 开始获取公开数据并计算...
+:install_dependencies
+echo   [2/3] 正在安装依赖，耗时取决于网络...
+"%VPY%" -m pip install -r requirements.txt --disable-pip-version-check
+if errorlevel 1 goto install_failed
+"%VPY%" -m techpanic --version >nul 2>nul
+if errorlevel 1 goto install_failed
+echo ok> ".venv\.techpanic-installed"
+
+:run_project
+echo   [3/3] 开始运行...
 echo.
 "%VPY%" -m techpanic %*
-
 set "CODE=%ERRORLEVEL%"
 echo.
-if "%CODE%"=="0"  echo   完成（全部数据均为最新）。
-if "%CODE%"=="2"  echo   完成（部分降级：期权数据可能滞后 1 个交易日，属正常现象）。
-if "%CODE%"=="3"  echo   没有拿到数据 —— 请检查网络后重试。
-if "%CODE%"=="4"  echo   运行环境有问题 —— 见上方提示。
-if "%CODE%"=="5"  echo   命令参数有误。
-if "%CODE%"=="1"  echo   发生未预期的错误 —— 请运行 .venv\Scripts\python.exe -m techpanic --debug 查看完整堆栈。
+if "%CODE%"=="0" echo   完成。
+if "%CODE%"=="2" echo   完成，部分数据降级，请查看上方结果。
+if "%CODE%"=="3" echo   没有拿到数据，请检查网络或本地缓存。
+if "%CODE%"=="4" echo   运行环境有问题，请查看上方提示。
+if "%CODE%"=="5" echo   命令参数有误。
+if "%CODE%"=="1" echo   发生未预期错误，可追加 --debug 查看堆栈。
 if "%CODE%"=="130" echo   已手动中断。
+goto finish
+
+:no_python
+echo   [错误] 没找到 Python，请安装 Python 3.12 或更高版本。
+echo   https://www.python.org/downloads/
+goto environment_error
+
+:environment_failed
+echo   [错误] 创建虚拟环境失败，请检查 Python 安装。
+goto environment_error
+
+:wrong_version
+echo   [错误] 当前环境需要 Python 3.12 或更高版本。
+"%VPY%" -V
+echo   请使用受支持的 Python 修复虚拟环境。不要删除 data 目录。
+goto environment_error
+
+:pip_failed
+echo   [错误] 内置 ensurepip 无法修复 pip。
+echo   请修复或安装完整的 Python 3.12 以上版本，再重试。
+echo   此操作未删除本地缓存或数据。
+goto environment_error
+
+:install_failed
 echo.
-echo   结果文件在 data\output\ 目录下。
+echo   [错误] 依赖安装失败。请检查上方 pip 错误。
+echo   网络不通时可手动使用镜像：
+echo     "%VPY%" -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+goto environment_error
+
+:environment_error
+set "CODE=4"
+
+:finish
 echo.
 pause
 exit /b %CODE%

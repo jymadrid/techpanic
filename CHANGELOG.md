@@ -20,6 +20,13 @@
 - 单元与端到端测试 105 个，含因果性测试、编码契约测试与 3 个坏数据负例。
 - GitHub Actions：CI（测试 + lint + 真实端到端）与每日定时抓取。
 
+### Windows 启动缺 pip 修复
+
+- 现有虚拟环境缺少 pip 时先运行 Python 内置 ensurepip，不删除环境或数据。移除启动时不必要的 pip 在线升级。
+- Windows 启动脚本使用标签跳转、ASCII 注释和 CRLF 换行，避免复杂括号块中的错误提示被当作命令。禁用 delayed expansion，支持路径中的感叹号。
+- 增加 4 个真实 cmd 分支测试，覆盖缺 pip、旧标记、依赖安装失败与 ensurepip 失败；Windows 完整套件 109 passed。
+- 实际原环境已从 No module named pip 自动恢复，安装分支和离线计算启动均通过。
+
 ### 发布路径修复（S1 / S4 / S5）
 
 - `requirements.txt` 增加 `-e .`，文档安装步骤会安装项目本身；三个启动脚本会复查包是否可运行，避免旧标记掩盖未安装的包。
