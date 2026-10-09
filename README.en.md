@@ -198,4 +198,4 @@ All data is fetched at runtime from public interfaces.
 
 ## Dual-source index data
 
-Each online run requests both Eastmoney and Sina daily history. Use the valid source with the later end date; prefer Eastmoney on equal dates. Fall back to cached history only if both sources fail validation. Index requests are not skipped by the QVIX cache TTL. Logs and JSON include source dates and selection reasons. A successful request does not guarantee current-day closing data.
+Each online run requests Eastmoney, Tencent, and Sina daily history. Use the valid source with the latest end date; break ties in the order Eastmoney > Tencent > Sina. Fall back to cached history only if all three sources fail validation. Tencent history is fetched in yearly segments, not replaced with a short rolling window. Index requests are not skipped by the QVIX cache TTL. Logs and JSON include source dates and selection reasons. A successful request does not guarantee current-day closing data.

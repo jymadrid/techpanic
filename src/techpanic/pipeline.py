@@ -171,10 +171,11 @@ def run(
         notes: list[str] = []
 
         if not cfg.offline:
-            # 每次在线运行都抓两源；指数不再使用 QVIX 的 6 小时 TTL。
+            # 每次在线运行都抓三源；指数不再使用 QVIX 的 6 小时 TTL。
             res = index_daily.fetch_index(t, cfg.network)
             index_selection[t.key] = res
-            for src in ("em", "sina"):
+            notes.extend(res.warnings)
+            for src in ("em", "tx", "sina"):
                 label = index_daily.SOURCE_NAMES[src]
                 if src in res.source_dates:
                     emit(f"      {t.name}：{label} 返回有效日线，截至 {res.source_dates[src]}")
@@ -199,10 +200,10 @@ def run(
                     cached = None
             if cached is not None:
                 frame, source = cached, "cache"
-                why = "离线模式" if cfg.offline else "两源均不可用"
+                why = "离线模式" if cfg.offline else "三源均不可用"
                 emit(f"      {t.name}：{why}，使用本地缓存（{chk.rows} 行，截至 {chk.last_date}）")
                 if not cfg.offline:
-                    notes.append("指数两源均不可用，已退回缓存，无法确认是否为最新收盘数据")
+                    notes.append("指数三源均不可用，已退回缓存，无法确认是否为最新收盘数据")
             else:
                 emit(f"      {t.name}：无可用指数数据 → 跳过该标的")
                 warnings.append(f"{t.name}：无可用指数数据，未产出读数")
@@ -418,7 +419,7 @@ def run(
         results.append(tr)
         emit(f"      {t.name}：完成（{len(d)} 行序列）")
 
-    # 两源失败或收盘后无法确认当天数据时明确降级；离线本身不算失败。
+    # 三源失败或收盘后无法确认当天数据时明确降级；离线本身不算失败。
     if degraded_index:
         degraded = True
 

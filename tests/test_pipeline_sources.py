@@ -60,7 +60,7 @@ def test_both_failed_fall_back_to_cache_with_notes(monkeypatch, seeded_data_dir)
     assert len(calls) == 2
     assert result.exit_code == 2
     assert all(t.index_source == "cache" for t in result.targets)
-    assert all(any("两源均不可用" in n for n in t.notes) for t in result.targets)
+    assert all(any("三源均不可用" in n for n in t.notes) for t in result.targets)
 
 
 def test_offline_never_calls_sources(monkeypatch, seeded_data_dir):
