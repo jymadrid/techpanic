@@ -212,11 +212,27 @@ def run(
             warnings.append(f"{t.name}：指数行数不足，未产出读数")
             continue
 
+        # 可疑缺口检测：只报事实、不改数值。
+        # A 股长假休市也会落在这里，所以措辞是"值得看一眼"而不是"数据坏了"。
+        gaps = index_mod.detect_cache_gaps(frame["date"])
+        if gaps:
+            worst = "、".join(f"{a}→{b}（{d} 天）" for a, b, d in gaps[:2])
+            warnings.append(
+                f"{t.name}：日线存在 {len(gaps)} 处超过 5 个自然日的间隔，"
+                f"例如 {worst}。长假休市属正常；若怀疑上游漏数，"
+                "「近5日涨跌」按有效行计算会因此偏长，请谨慎引用。"
+            )
+
         index_frames[t.key] = frame
         index_source[t.key] = source
-        # 用了本地缓存（说明抓取失败或缓存新鲜）→ 不是「全部数据最新」
-        if source == "cache":
+        # 只有「抓取失败 → 退回缓存」才算降级。
+        # 不能写成"只要 source == 'cache' 就降级"：缓存仍在 TTL 内、主动跳过
+        # 抓取时数据本来就是最新的，那属于正常成功。否则零滞后运行也会报退出码 2，
+        # 并打印「有降级项（见上方 ⚠ 说明）」而上方形**一条 ⚠ 都没有** ——
+        # 用户被指向一个不存在的东西，脚本也无法区分"数据陈旧"与"只是走了缓存"。
+        if not fetched and source == "cache":
             degraded_index = True
+            warnings.append(f"{t.name}：本次使用本地缓存（未能抓取到新数据）")
         if fetched:
             fetched_online = True
             emit(f"      {t.name}：{source} OK  {len(frame)} 行  截至 {frame['date'].iloc[-1].date()}")

@@ -260,38 +260,47 @@ def load_config(
         raise ConfigError("[index] 必须是一个表（table）")
     weights = idx_tbl.get("weights", {}) or {}
     anchors = idx_tbl.get("frozen_anchors", {}) or {}
+    # 同 [network] 段的教训：回退默认值一律取自 dataclass 字段默认值本身。
+    # 早期这里把 0.40/0.35/0.25、3、60、20、5、252、"expanding" 等字面量写死，
+    # 于是改 IndexConfig 的默认值**不会生效** —— 会被这一行静默覆盖回旧值，
+    # 正好是上面第 237 行注释警告过的那个坑（[network] 修了，[index] 漏了）。
+    _ix = IndexConfig()
+    _wt = (_ix.weight_s, _ix.weight_a, _ix.weight_f)
+    _anc = _ix.frozen_anchors
     index_cfg = IndexConfig(
-        weight_s=float(weights.get("S", 0.40)),
-        weight_a=float(weights.get("A", 0.35)),
-        weight_f=float(weights.get("F", 0.25)),
-        ema_span=int(idx_tbl.get("ema_span", 3)),
-        z_min_periods=int(idx_tbl.get("z_min_periods", 60)),
-        rv_window=int(idx_tbl.get("rv_window", 20)),
-        rv_short=int(idx_tbl.get("rv_short", 5)),
-        annualization=int(idx_tbl.get("annualization", 252)),
-        level_anchor=str(idx_tbl.get("level_anchor", "expanding")),
+        weight_s=float(weights.get("S", _wt[0])),
+        weight_a=float(weights.get("A", _wt[1])),
+        weight_f=float(weights.get("F", _wt[2])),
+        ema_span=int(idx_tbl.get("ema_span", _ix.ema_span)),
+        z_min_periods=int(idx_tbl.get("z_min_periods", _ix.z_min_periods)),
+        rv_window=int(idx_tbl.get("rv_window", _ix.rv_window)),
+        rv_short=int(idx_tbl.get("rv_short", _ix.rv_short)),
+        annualization=int(idx_tbl.get("annualization", _ix.annualization)),
+        level_anchor=str(idx_tbl.get("level_anchor", _ix.level_anchor)),
         frozen_anchors=(
-            float(anchors.get("p25", 45.0)),
-            float(anchors.get("p50", 55.0)),
-            float(anchors.get("p75", 63.0)),
-            float(anchors.get("p90", 71.0)),
+            float(anchors.get("p25", _anc[0])),
+            float(anchors.get("p50", _anc[1])),
+            float(anchors.get("p75", _anc[2])),
+            float(anchors.get("p90", _anc[3])),
         )
         if anchors
-        else (45.0, 55.0, 63.0, 71.0),
+        else _anc,
     )
     index_cfg.xcheck()
 
     out_tbl = raw.get("output", {}) or {}
     ui_tbl = raw.get("ui", {}) or {}
+    _oc = OutputConfig()
+    _uc = UIConfig()
     output_cfg = OutputConfig(
-        formats=tuple(str(x) for x in out_tbl.get("formats", ("csv", "json"))),
-        encoding=str(out_tbl.get("encoding", "utf-8-sig")),
-        json_schema=str(out_tbl.get("json_schema", "v1")),
+        formats=tuple(str(x) for x in out_tbl.get("formats", _oc.formats)),
+        encoding=str(out_tbl.get("encoding", _oc.encoding)),
+        json_schema=str(out_tbl.get("json_schema", _oc.json_schema)),
     )
     ui_cfg = UIConfig(
-        lang=str(ui_tbl.get("lang", "zh-CN")),
-        color=str(ui_tbl.get("color", "auto")),
-        progress=bool(ui_tbl.get("progress", True)),
+        lang=str(ui_tbl.get("lang", _uc.lang)),
+        color=str(ui_tbl.get("color", _uc.color)),
+        progress=bool(ui_tbl.get("progress", _uc.progress)),
     )
 
     cfg = AppConfig(

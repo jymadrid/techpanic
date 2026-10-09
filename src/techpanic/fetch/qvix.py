@@ -43,9 +43,19 @@ QVIX_URL = "http://1.optbbs.com/d/csv/d/k.csv"
 #
 # 现在的防错方式是**结构不变量**（见 _assert_ohlc_invariant）：
 # 4 列必须满足 open ≤ high、low ≤ high、low ≤ close ≤ high。
-# 一旦整体错位一格，取到的 (low, close, next_open, next_high) 会立刻
-# 违反该不变量（实测 kcb 满足率 0.0000、cyb 0.0093，而正确窗口 ≥ 0.99），
-# 这是比「数值看起来合理」强得多的判据。
+#
+# 实测区分度（Round 2 独立复核，全部 9 个品种）：
+#   正确窗口：满足率 0.9600 ~ 0.9979，high>low 占比 0.9861 ~ 0.9990
+#   左移一格：满足率 0.0000 ~ 0.0098
+# 阈值取 0.95 / 0.97，两侧没有重叠。
+#
+# ⚠️ 但要说清它的**能力边界**：它证明的是"这 4 列满足 OHLC 的相对关系"，
+#    而不是"这 4 列就是该品种的 OHLC"。实测扫描全部 4 列窗口，有 15 个起点
+#    能通过阈值，其中 7/15/23/73 是"起点落在某四列第 3 列"的**退化窗口**
+#    （第 4 列落在 high 上，low≤close≤high 退化成 open≤high，恒成立）。
+#    也就是说：它对"左移一格"这个具体事故形态非常灵敏（9/9 拒绝），
+#    但不构成一般性的证明。裕度最小的正确窗口是 1000index（+0.0100），
+#    上游再脏一点就会误杀它 —— 后果只是该品种走缓存，不会出错数。
 #
 # 索引来源：akshare 1.19.1 的 akshare/index/index_option_qvix.py
 # （KCB=83-86、CYB=71-74、50ETF=1-4、300ETF=9-12、500ETF=67-70、
@@ -76,6 +86,19 @@ QVIX_COLUMNS: dict[str, tuple[int, int]] = {
 
 MAX_COL_INDEX = max(c[3] for c in QVIX_OHLC.values())
 
+# 导入期自检：窗口的第 1 列不能是第 0 列。
+# 第 0 列是日期（形如 2026/9/30），把它当成价格列会让该行四元组全部
+# 解析失败 —— 进而让结构不变量"样本不足"而跳过（这个洞真实存在过）。
+# 放在模块级是刻意的：写错列号应该在 import 阶段就炸，而不是等到运行时。
+# 注：未来的品种若真的从第 1 列开始（0-based 第 1 列 = 第二个字段），
+# 这里不会误伤；只有 <1 才视为错误。
+for _key, _quad in QVIX_OHLC.items():
+    if _quad[0] < 1:
+        raise DataQualityError(
+            f"QVIX 列号配置错误：{_key} 的窗口 {_quad} 从第 {_quad[0]} 列开始，"
+            "而第 0 列是日期字段，不是价格。"
+        )
+
 
 @dataclass
 class QvixFetchResult:
@@ -96,6 +119,10 @@ def parse_wide(text: str, key: str) -> pd.DataFrame:
     rows: list[tuple[str, float]] = []
     ohlc_rows: list[tuple[float, float, float, float]] = []
     max_cols = 0
+    # 窗口首列是否在**任何一行**成功解析成数值。用来区分两种"四元组解析失败"：
+    #   * 首列从来没成功过 → 它指向纯文本列（日期），列号错位 → 必须拒绝；
+    #   * 首列成功过，只是这个 key 稀疏 → 上游正常特征 → 放行。
+    first_col_parsed = False
 
     for raw_line in text.splitlines():
         line = raw_line.strip()
@@ -115,6 +142,14 @@ def parse_wide(text: str, key: str) -> pd.DataFrame:
             continue  # #NUM! / 空值
         rows.append((date_s, value))
 
+        # 单独记一下首列能否解析（见 first_col_parsed 的说明）
+        if not first_col_parsed:
+            try:
+                float(parts[quads[0]].strip().strip('"'))
+                first_col_parsed = True
+            except (ValueError, IndexError):
+                pass
+
         # 同行的开/高/低三列也要能解析，供结构不变量检验使用
         try:
             quad = tuple(
@@ -132,7 +167,12 @@ def parse_wide(text: str, key: str) -> pd.DataFrame:
     if not rows:
         raise DataQualityError(f"QVIX({key}) 解析后没有任何有效行")
 
-    _assert_ohlc_invariant(key, ohlc_rows)
+    _assert_ohlc_invariant(
+        key,
+        ohlc_rows,
+        parsed_rows=len(rows),
+        first_col_ever_parsed=first_col_parsed,
+    )
 
     df = pd.DataFrame(rows, columns=["date_raw", "close"])
     df["date"] = pd.to_datetime(df["date_raw"], format="mixed", errors="coerce")
@@ -142,17 +182,24 @@ def parse_wide(text: str, key: str) -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 
-# 结构不变量阈值。标定依据（真实上游实测）：
-#   正确窗口：满足率 96.1%~99.8%，high>low 占比 98.6%~100%
-#   错位一格：满足率  0.0%~ 64.9%，high>low 占比明显偏低
-# 两组之间没有重叠，阈值取在中间；high>low 这一项单独就能把 9/9 错位窗口打掉。
+# 结构不变量阈值。标定依据（Round 2 独立复核，9 个品种逐一实测）：
+#   正确窗口：满足率 0.9600~0.9979，high>low 占比 0.9861~0.9990
+#   错位一格：满足率 0.0000~0.0098
+# 两组之间没有重叠，阈值取在中间。
+# ⚠️ 历史注记：早期注释写的是"错位 0.0%~64.9%"与"cyb 0.0093"，
+#    那是把别的窗口/别的位移混进来了，无法复现；已按实际测量改正。
+# 
 OHLC_MIN_ROWS = 100           # 样本行数下限
 OHLC_MIN_SATISFACTION = 0.95  # 不变量满足率下限
 OHLC_MIN_SPREAD = 0.97        # 「high > low」占比下限（挡「4 列其实是同一列/近似列」）
 
 
 def _assert_ohlc_invariant(
-    key: str, quads: list[tuple[float, float, float, float]]
+    key: str,
+    quads: list[tuple[float, float, float, float]],
+    *,
+    parsed_rows: int = 0,
+    first_col_ever_parsed: bool = True,
 ) -> None:
     """校验取到的 4 列真的是 open/high/low/close。
 
@@ -163,7 +210,28 @@ def _assert_ohlc_invariant(
     说明这 4 列不是一组 OHLC，立即拒绝，绝不用它算读数。
     """
     if len(quads) < OHLC_MIN_ROWS:
-        return  # 样本太少，不变量不具统计意义；交由行数断言处理
+        # ⚠️ 这里曾经是一个**静默放行的洞**：50etf 的窗口是 (1,2,3,4)，
+        # 整体左移一格后变成 (0,1,2,3) —— 第 0 列是**日期**，
+        # float("2026/9/30") 全部失败 → quads 为空 → 函数直接 return，
+        # 既不校验也不报错，于是 50etf 会继续用"最低价"算读数。
+        # 它是 9 个品种里唯一窗口从第 1 列开始的，所以只有它踩到这个洞。
+        # 正确的处理：解析不出四元组的行太多，本身就说明窗口指错了位置。
+        if parsed_rows >= OHLC_MIN_ROWS and not first_col_ever_parsed:
+            # 窗口首列在整个文件里**一次都没解析出数值** → 它指向的是一列
+            # 纯文本（日期、标签），不是价格。这正是"窗口整体错位、首列吃掉
+            # 日期字段"的形态，必须拒绝，绝不能因为"样本不足"而放行。
+            #
+            # 反之若首列解析成功过（只是本 key 稀疏，例如该品种大部分历史
+            # 单元格是 #NUM!），那属于上游正常的稀疏特征，放行 —— 这与
+            # tests/test_qvix_parse.py::test_assert_structure_accepts_sparse_wide_table
+            # 的意图一致。
+            raise DataQualityError(
+                f"QVIX({key}) 列结构异常：窗口 {QVIX_OHLC[key]} 的首列"
+                f"（第 {QVIX_OHLC[key][0]} 列）在全部 {parsed_rows} 个数据行里"
+                "都没有一个可以解析成数值 —— 它指向的很可能不是价格列"
+                "（例如日期列），说明列号已整体错位。已拒绝使用该数据。"
+            )
+        return  # 样本确实太少，不变量不具统计意义；交由行数断言处理
 
     arr = np.asarray(quads, dtype=float)
     open_, high, low, close = arr[:, 0], arr[:, 1], arr[:, 2], arr[:, 3]

@@ -36,17 +36,42 @@ def pct_rank(series: pd.Series, min_periods: int = 60) -> pd.Series:
     return series.expanding(min_periods=min_periods).rank(pct=True) * 100.0
 
 
-def _trading_day_return(close: pd.Series, n: int) -> pd.Series:
-    """按**交易日**计算 n 日涨跌幅（%）。
+def _return_over_n_rows(close: pd.Series, n: int) -> pd.Series:
+    """计算 n 日涨跌幅（%）：**按序列中的有效行**回溯 n 行。
 
-    不能直接用 close.shift(n)：close 虽已 dropna，但上游缓存仍可能缺某一天。
-    一旦缺行，shift(n) 就会跨过 n 个**有效行**而不是 n 个**交易日** ——
-    实测过：少一行会让「近5日涨跌」变成按约 26 个交易日计算
-    （2020-04-09 由 +6.10% 变 -12.08%，方向由「向上」翻成「向下」，
-    按 README 判读表就是「狂热」与「恐慌」的差别，且没有任何警告）。
+    ## 这个函数的能力边界（请务必读完再改）
 
-    这里改为按索引位置回溯：只有当 n 个交易日之前那一行确实存在时才计算，
-    否则返回 NaN。宁可显示「未知」，也不给一个口径错误的百分比。
+    它是 `close.shift(n)` 的等价实现，**不是**严格意义上的
+    "n 个自然交易日收益"。两者在序列完整时完全一致；一旦序列缺行，
+    它跨过的是 n 个**有效行**，实际可能对应更多交易日。
+
+    ## 为什么没有被"修成"真正的交易日口径
+
+    作者尝试过，结论是**做不到，硬做会引入更大的错误**：
+
+    1. 正确算法需要一个**权威交易日历**，而不是上证指数自身的日期序列
+       （否则就是循环论证："我们的缓存是完整的，因为我们假设它是完整的"）。
+    2. 即使用 `pd.bdate_range`（周一至周五）去近似，也会把**春节、国庆**
+       这类真实休市当成"缺数据"。实测在本仓库的缓存上：
+         科创50   1637 行，bdate_range 认为"缺" 129 天
+         创业板指 3969 行，bdate_range 认为"缺" 299 天
+       其中绝大多数是长假休市。若按此置 NaN，会凭空抹掉约 13% 的
+       「近5日涨跌」——而用户看到"未知"的原因只是我们用了错误的日历。
+    3. A 股交易日历无法从价格数据中**唯一推断**："周一至周五没有数据"
+       既可能是"休市"，也可能是"上游漏了一天"。二者不能靠日期形状区分。
+
+    所以这里选择**做能确定的事**，而不是假装能确定：
+      * 涨跌幅按有效行计算（序列完整时即等于交易日口径）；
+      * 由 `_cache_gaps` 检测"可疑缺口"并在运行时显式告警，
+        把判断权交给用户，而不是静默改变数值。
+        详见 pipeline.py 里对缓存缺口的告警。
+
+    ## 历史教训
+
+    "近5日涨跌"曾被误当作 26 个交易日口径的原因不是本函数，而是
+    `compute()` 里把 `dropna` 后的**过滤表**传了进来 —— 中间缺行会让
+    shift 跨得更远。现在传入的是完整序列（缓存写盘时不允许日期乱序或重复，
+    见 `store.check_frame`），因此正常路径不会出现这个偏差。
     """
     values = close.to_numpy(dtype=float)
     n = max(int(n), 1)
@@ -59,6 +84,29 @@ def _trading_day_return(close: pd.Series, n: int) -> pd.Series:
         with np.errstate(divide="ignore", invalid="ignore"):
             out[valid] = (cur / prev - 1.0) * 100.0
     return pd.Series(out, index=close.index, dtype=float)
+
+
+# 普通周末的最大间隔是 3 天（周五→周一）。超过 5 个自然日，说明中间
+# 至少有一个工作日没有数据 —— 可能是长假休市，也可能是上游漏了一天。
+SUSPICIOUS_GAP_DAYS = 5
+
+
+def detect_cache_gaps(dates) -> list[tuple[str, str, int]]:
+    """找出"可疑缺口"：相邻两行间隔超过 5 个自然日的位置。
+
+    返回值是 (前一个日期, 后一个日期, 间隔天数) 的列表，按间隔从大到小。
+
+    **只说事实，不替代日历。** A 股长假休市同样会落在这里，因此调用方
+    应当把它当成"值得看一眼"的提示，而不是"数据一定坏了"的判定。
+    """
+    if len(dates) < 2:
+        return []
+    ordered = pd.DatetimeIndex(dates).sort_values()
+    deltas = np.diff(ordered.values).astype("timedelta64[D]").astype(int)
+    out: list[tuple[str, str, int]] = []
+    for i in np.nonzero(deltas > SUSPICIOUS_GAP_DAYS)[0]:
+        out.append((str(ordered[i].date()), str(ordered[i + 1].date()), int(deltas[i])))
+    out.sort(key=lambda t: -t[2])
 
 
 def compute(
@@ -105,7 +153,7 @@ def compute(
     d["A"] = (pct_rank(d["semi"], mp) + pct_rank(d["doup"], mp)) / 2.0
     d["F"] = pct_rank(d["qvix"].dropna(), mp).reindex(d.index)
 
-    d["ret5"] = _trading_day_return(d["close"], cfg.rv_short)
+    d["ret5"] = _return_over_n_rows(d["close"], cfg.rv_short)
     direction = np.where(d["ret5"] < 0, "向下", "向上")
     d["方向"] = np.where(d["ret5"].isna(), "未知", direction)
 

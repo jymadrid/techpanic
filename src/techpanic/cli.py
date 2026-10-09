@@ -154,14 +154,18 @@ def _check_sources(cfg, ui) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
-
+    # ⚠️ 顺序至关重要：必须在 build_parser() / parse_args() **之前**接管编码。
+    # argparse 自己也会往 stdout/stderr 写：-h 打帮助、参数错误打 usage +
+    # 中文提示。这些都发生在本函数更早的位置，一旦晚于 parse_args，它们仍会
+    # 用平台默认编码（中文 Windows = GBK）写出，于是：
+    #   * 管道里读到的 --help 不是合法 UTF-8；
+    #   * 参数错误提示里的「参数错误」会变成乱码（实测 stderr 含 0xb2）。
     from .ui import Ui, elapsed_str, force_utf8_stdio
 
-    # 必须在任何输出之前执行：中文 Windows 的 GBK 控制台会把 JSON 写成
-    # GBK 字节流，并让「⚠」在重定向时直接抛 UnicodeEncodeError。
     force_utf8_stdio()
+
+    parser = build_parser()
+    args = parser.parse_args(argv)
 
     try:
         cfg = load_config(

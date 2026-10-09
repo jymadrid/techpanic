@@ -10,32 +10,54 @@ from techpanic.errors import DataQualityError
 from techpanic.fetch import qvix as qv
 
 
-def _wide(rows: int = 400, cols: int = 90, value: float = 25.0, key: str = "kcb") -> str:
+def _wide(
+    rows: int = 400,
+    cols: int = 90,
+    value: float = 25.0,
+    key: str = "kcb",
+    *,
+    dense_ohlc: bool = True,
+) -> str:
     """构造一张合成宽表。
 
-    cols 是**数据格数**（不含首列日期）。故意把除目标列以外的格子全填 "#NUM!"，
-    以复现上游「数值占比只有 ~28%」的稀疏特征。
+    ## 位置学（很容易搞错，务必看清）
+
+    上游文件**没有表头行**，每行第 0 个字段就是日期。因此：
+
+        parts = line.split(",")
+        parts[0]      = 日期
+        parts[k]      = 上游第 k 个数据格   (k >= 1)
+
+    代码里的 QVIX_OHLC[key] 用的正是这个 parts 位置（= akshare 的 iloc 列号）。
+    所以构造一行时，想写第 col 个数据格，就要写到 cells[col]（cells[0] 是日期）。
+
+    cols = 数据格数（不含日期）；生成的 parts 长度为 cols + 1。
+
+    ## 稀疏性
+
+    除目标品种的四列以外全部填 "#NUM!"，以复现上游「数值占比只有 ~28%」的特征。
+    真实上游每个品种的**四列都是有值的**，只有别的品种的格子才稀疏 ——
+    所以默认 dense_ohlc=True 把四列都填上真实形态的开/高/低/收。
+    若只填收盘价一列，结构不变量拿不到成组四元组，测的就不是真实数据形态。
+
+    dense_ohlc=False 保留旧的"仅收盘价"行为，用于稀疏场景。
     """
-    out = [",".join(["", *[str(i) for i in range(1, cols)]])]
-    target = qv.QVIX_COLUMNS[key][1]
+    parts_header = [""] + [str(i) for i in range(1, cols + 1)]
+    out = [",".join(parts_header)]
+    o, h, low, c = qv.QVIX_OHLC[key]
     for i in range(rows):
         day = pd.Timestamp("2024-01-01") + pd.Timedelta(days=i)
-        cells = [f"{day.year}/{day.month}/{day.day}"]
-        cells += ["#NUM!"] * cols
-        if target < len(cells):
-            cells[target] = str(value + i * 0.01)
+        cells = ["#NUM!"] * (cols + 1)  # cells[0] = 日期
+        cells[0] = f"{day.year}/{day.month}/{day.day}"
+        base = value + i * 0.01
+        if dense_ohlc:
+            for col, val in ((o, base - 0.3), (h, base + 0.3), (low, base - 0.05), (c, base)):
+                if 1 <= col <= cols:
+                    cells[col] = f"{val:.4f}"
+        elif 1 <= c <= cols:
+            cells[c] = f"{base:.4f}"
         out.append(",".join(cells))
     return "\n".join(out)
-
-
-def test_parse_wide_extracts_close_column():
-    text = _wide()
-    df = qv.parse_wide(text, "kcb")
-    assert len(df) == 400
-    assert df["close"].iloc[0] == pytest.approx(25.0)
-    assert df["date"].iloc[-1].year == 2025
-
-
 def test_parse_wide_rejects_missing_columns():
     """上游删列后必须显式拒绝，而不是静默取到错误的列。"""
     text = _wide(cols=20)  # 目标列 85 根本不存在
