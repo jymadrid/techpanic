@@ -119,6 +119,7 @@ def test_bad_argument_exits_5_not_2():
     撞码会让定时任务把「参数写错」当成「数据略旧」而放过。
     """
     p = _run("--definitely-not-a-flag")
-    assert p.returncode == 5, f"参数错误应退 5，实际 {p.returncode}"
-    assert "参数错误" in p.stderr.decode("utf-8", errors="replace")
+    err = p.stderr.decode("utf-8", errors="replace")
+    assert p.returncode == 5, f"参数错误应退 5，实际 {p.returncode}；stderr={err!r}"
+    assert "参数错误" in err, f"stderr 缺少中文提示：{err!r}"
 
