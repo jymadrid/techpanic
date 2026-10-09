@@ -222,9 +222,14 @@ def main(argv: list[str] | None = None) -> int:
             ui.card(tr)
         ui.footer()
 
-        files = report_mod.write_run_files(
+        # run() 内部已经把逐标的的 CSV/JSON 写进去了，这里补上整次运行的汇总文件。
+        # 之前只统计后者，于是终端说「已保存 3 个文件」而磁盘上其实有 7 个
+        # （2 标的 × (CSV+JSON) + latest.json + badge.json + summary.md），
+        # 用户按提示去核对文件数会对不上。
+        run_files = report_mod.write_run_files(
             result.targets, cfg, result.exit_code, result.elapsed
         )
+        files = list(result.output_files) + run_files
         ui.info(f"  已保存（{len(files)} 个文件）：")
         for f in files:
             ui.info(f"    {f}")

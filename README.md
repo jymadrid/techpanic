@@ -71,7 +71,7 @@ techpanic            # 直接敲名字就能跑
   ⚠ QVIX 未发布，完整口径停在 2026-09-30（滞后 1 个交易日）
 ```
 
-同时写出 5 个文件到 `data/output/`：
+同时写出 **7 个文件**到 `data/output/`（2 个标的 × (CSV + JSON)，外加 3 个汇总文件）：
 
 | 文件 | 用途 |
 |---|---|
@@ -80,6 +80,11 @@ techpanic            # 直接敲名字就能跑
 | `badge.json` | shields.io endpoint 徽章数据 |
 | `panic_index_tech_kcb.csv` | 科创50 全历史序列（Excel 双击可开，中文不乱码） |
 | `panic_index_tech_cyb.csv` | 创业板指全历史序列 |
+| `panic_index_tech_kcb.json` | 科创50 的单标的 JSON 快照 |
+| `panic_index_tech_cyb.json` | 创业板指的单标的 JSON 快照 |
+
+终端会以「已保存（7 个文件）」把**逐标的产物**和**汇总产物**一起列出。
+加 `--with-sse50` 会再增加上证50的 CSV 与 JSON。
 
 ---
 

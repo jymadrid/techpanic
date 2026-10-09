@@ -159,7 +159,7 @@ pytest
 
 | 测试 | 验证什么 |
 |---|---|
-| `test_offline_run_succeeds_and_writes_outputs` | 离线跑通并产出全部 5 个文件 |
+| `test_offline_run_succeeds_and_writes_outputs` | 离线跑通并产出全部产物 |
 | `test_csv_is_utf8_bom_and_readable_by_pandas` | CSV 带 BOM（Excel 中文不乱码）且可被 pandas 读回 |
 | `test_run_is_deterministic` | **两次运行输出逐字节相同** |
 | `test_json_summary_fields` | JSON schema 字段完整 |
