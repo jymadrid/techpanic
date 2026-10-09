@@ -57,6 +57,18 @@ def to_frame(tr: TargetResult) -> pd.DataFrame:
     out["标的"] = tr.target.name
     for cn, en in CSV_COLUMNS[1:]:
         out[cn] = d[en].to_numpy() if en in d.columns else np.nan
+
+    # 加一组「完整口径那一行」的成分列，并标出它对应的日期。
+    # 原因：同一张表里 A 行的成分与 B 行的成分**不是同一行数据**
+    # （QVIX 滞后时 full 行在更早的日期），只给一列 F 会让复算者对不上号。
+    for cn, en in (("突发性_完整口径", "S"), ("不对称性_完整口径", "A"),
+                   ("前瞻恐惧_完整口径", "F"), ("完整口径数据日", "PI_full")):
+        if en == "PI_full":
+            mask = d["PI_full"].notna()
+            col = pd.Series(np.where(mask, d.index.astype(str), ""), index=d.index)
+        else:
+            col = d[en] if en in d.columns else pd.Series(np.nan, index=d.index)
+        out[cn] = col.to_numpy()
     return out
 
 
@@ -95,11 +107,16 @@ def to_json_payload(tr: TargetResult, cfg: AppConfig) -> dict:
         # components 取自「即时口径那一行」（= 最新交易日），而 full.value 可能
         # 来自更早的数据日（QVIX 滞后）。两边都不带日期时，机器消费方无法复算，
         # 也看不出 A 卡上的「前瞻恐惧」到底是哪一天的值。故显式带上日期。
+        # 两套成分必须分开给出，因为两个口径的数据日可能不同：
+        #   price_only 口径 → components（最新交易日那一行，F 通常缺失）
+        #   full 口径       → full_components（full.value 正是用这三个数算的）
         "components": {
             "data_date": None if tr.price_date is None else str(tr.price_date.date()),
             "values": {k: _fmt(v, 3) for k, v in tr.components.items()},
-            # 完整口径的 S/A/F 来自它自己的数据日，可能与上面不同
-            "full_data_date": None if tr.full_date is None else str(tr.full_date.date()),
+        },
+        "full_components": {
+            "data_date": None if tr.full_date is None else str(tr.full_date.date()),
+            "values": {k: _fmt(v, 3) for k, v in tr.full_components.items()},
         },
         "qvix": {
             "series": tr.target.qvix,

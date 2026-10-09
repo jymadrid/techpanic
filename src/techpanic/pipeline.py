@@ -56,7 +56,13 @@ class TargetResult:
     direction: str = "未知"
     ret: float | None = None
     ret5: float | None = None
+    # 「即时口径那一行」的 S/A/F。注意它的 F 可能是 NaN：
+    # 最新交易日通常还没有 QVIX，所以这一行算不出 F。
     components: dict[str, float] = field(default_factory=dict)
+    # 「完整口径那一行」的 S/A/F —— full_value 正是用这三个数算出来的。
+    # 两个口径的数据日可能不同（QVIX 滞后），必须分开存，否则读数卡/JSON
+    # 会出现「用 9-30 的 F 算出 A 值，却展示 10-08 的 F=None」这类不自洽。
+    full_components: dict[str, float] = field(default_factory=dict)
 
     @property
     def has_full(self) -> bool:
@@ -342,6 +348,11 @@ def run(
             tr.full_value = float(fv_row["PI_full"])
             tr.full_date = fdate
             tr.full_level = str(fv_row["level_full"])
+            tr.full_components = {
+                "S": float(fv_row["S"]) if pd.notna(fv_row["S"]) else float("nan"),
+                "A": float(fv_row["A"]) if pd.notna(fv_row["A"]) else float("nan"),
+                "F": float(fv_row["F"]) if pd.notna(fv_row["F"]) else float("nan"),
+            }
             tr.full_percentile = index_mod.percentile(d, "full", tr.full_value)
             if stale > 0:
                 # QVIX 滞后是**正常现象**（盘后发布），但它让「完整口径」不是最新的，

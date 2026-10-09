@@ -184,9 +184,14 @@ class Ui:
                 f"      PI = {tr.full_value:5.1f}  "
                 f"【{self._c(level_a, LEVEL_COLOR.get(level_a, ''))}】  历史分位 {pct}"
             )
-            s = _num(tr.components.get("S"))
-            a = _num(tr.components.get("A"))
-            f = _num(tr.components.get("F"))
+            # 用**完整口径那一行**的成分：full_value 正是用这三个数算出来的。
+            # 以前这里取的是"最新行"的成分，而那行的 F 通常是 NaN，
+            # 于是读数卡显示「前瞻恐惧 待发布」，可读数明明是用某个 F 算出来的 ——
+            # 展示与计算不自洽，用户无法复算。
+            fc = tr.full_components or tr.components
+            s = _num(fc.get("S"))
+            a = _num(fc.get("A"))
+            f = _num(fc.get("F"))
             self._p(f"      成分：突发性 {s}  不对称性 {a}  前瞻恐惧 {f}")
         else:
             self._p("  A | 完整口径（三因子，含期权）  无值")
@@ -208,7 +213,10 @@ class Ui:
             self._p(f"      当日 {ret}  近5日 {ret5}  方向 {tr.direction}")
             s = _num(tr.components.get("S"))
             a = _num(tr.components.get("A"))
-            self._p(f"      成分：突发性 {s}  不对称性 {a}  前瞻恐惧 待发布")
+            # 即时口径只用 S 和 A；F 在此口径下不被使用，
+            # 所以这里写「不参与」而不是「待发布」——后者会让人以为
+            # 这个读数还在等 QVIX，实际上它本来就不需要 QVIX。
+            self._p(f"      成分：突发性 {s}  不对称性 {a}  （前瞻恐惧不参与本口径）")
         else:
             self._p("  B | 即时口径（两因子，仅价格）  无值")
         self._p()
