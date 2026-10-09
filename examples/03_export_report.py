@@ -14,6 +14,9 @@ from techpanic.pipeline import run
 cfg = load_config(data_dir="./data")
 result = run(cfg, say=lambda m: None)
 
+# 写到 data/output/ 而不是仓库根目录，避免在仓库里留下游离文件
+out_path = Path(cfg.output_dir) / "report.md"
+
 lines = [
     "# 科技板块恐慌指数 PI 观测记录",
     "",
@@ -55,6 +58,5 @@ lines += [
     "> 本指标为研究/观测级度量，不预测涨跌方向，不构成投资建议。",
 ]
 
-out = Path("report.md")
-out.write_text("\n".join(lines), encoding="utf-8")
-print(f"已写出 {out.resolve()}")
+out_path.write_text("\n".join(lines), encoding="utf-8")
+print(f"已写出 {out_path.resolve()}")

@@ -42,6 +42,7 @@ config.local.toml
 *.local
 
 # ---------- 临时与备份 ----------
+report.md
 *.tmp
 *.bak
 *.log
