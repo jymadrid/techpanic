@@ -43,7 +43,7 @@ fi
 VPY=".venv/bin/python"
 
 # ---- 3. 依赖 ----
-if [ ! -f ".venv/.techpanic-installed" ]; then
+if [ ! -f ".venv/.techpanic-installed" ] || ! "$VPY" -m techpanic --version >/dev/null 2>&1; then
   echo "  [2/3] 正在安装依赖（首次约 2-5 分钟）..."
   "$VPY" -m pip install --upgrade pip --quiet
   if ! "$VPY" -m pip install -r requirements.txt --quiet; then

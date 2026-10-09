@@ -77,8 +77,26 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--version", action="version", version=f"techpanic {__version__}")
     p.add_argument("--data-dir", metavar="PATH", help="数据目录（缓存/输出），默认 ./data")
     p.add_argument("--config", metavar="PATH", help="配置文件路径，默认 <数据目录>/config.toml")
-    p.add_argument("--offline", action="store_true", help="只用本地缓存，不发起任何网络请求")
-    p.add_argument("--refresh", action="store_true", help="忽略缓存，强制重新抓取")
+    # ⚠️ 这两个开关用 `default=None` 而不是 argparse 默认的 `False`，
+    # 因为必须区分三种情况：
+    #   * 用户没传          -> None  -> 回退到环境变量（TECHPANIC_OFFLINE / _REFRESH）
+    #   * 用户传了 --offline -> True  -> 以命令行为准
+    #   * （False 在本程序里不可达，没有 --no-offline 这种反向开关）
+    # 早期用 store_true 的默认 False，cli.py 又无条件把它塞进 overrides，
+    # 于是 `TECHPANIC_OFFLINE=1` 变成永远不可达的死代码 ——
+    # 而 docs/CONFIGURATION.md 专门记录了这个变量并配了完整示例。
+    p.add_argument(
+        "--offline",
+        action="store_true",
+        default=None,
+        help="只用本地缓存，不发起任何网络请求（也可用 TECHPANIC_OFFLINE=1）",
+    )
+    p.add_argument(
+        "--refresh",
+        action="store_true",
+        default=None,
+        help="忽略缓存，强制重新抓取（也可用 TECHPANIC_REFRESH=1）",
+    )
     p.add_argument("--date", dest="as_of", metavar="YYYY-MM-DD", help="只使用该日期及之前的数据")
     p.add_argument("--json", dest="json_stdout", action="store_true", help="把 JSON 结果打印到标准输出")
     p.add_argument("--with-sse50", action="store_true", help="额外计算上证50（非科技，仅方法验证）")

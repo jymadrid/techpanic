@@ -4,7 +4,7 @@
 
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-45%20passed-brightgreen)](tests/)
+[![Tests](https://img.shields.io/badge/tests-105%20passed-brightgreen)](tests/)
 [![Data](https://img.shields.io/badge/data-%E5%85%AC%E5%BC%80%E6%8E%A5%E5%8F%A3%EF%BC%8C%E6%97%A0%E9%9C%80%20Key-orange)](#数据从哪来)
 
 **techpanic** 把「科创50 / 创业板指今天慌不慌」压缩成一个 0–100 的数：
@@ -230,7 +230,7 @@ techpanic/
 │   ├── config.py       # TOML + 环境变量 + 命令行三层配置
 │   ├── errors.py       # 异常 → 退出码映射
 │   └── fetch/          # 数据抓取（http / index_daily / qvix）
-├── tests/              # 61 个测试，含 3 个「坏数据」负例
+├── tests/              # 105 个测试，含 3 个「坏数据」负例
 ├── docs/               # 方法学、数据源、配置、验证、FAQ
 ├── examples/           # 可直接运行的示例脚本
 └── notebooks/          # Colab 快速上手
@@ -296,7 +296,7 @@ ruff check src tests
    导致「完整口径」显示上一交易日的数。本项目显式置为缺值。
    （差异说明见 [tests/test_regression_reference.md](tests/test_regression_reference.md)）
 2. **把「灰度」变成一等公民**：降级、滞后、缓存全部在输出里显式标注，绝不静默。
-3. **把「可信」变成可验证的**：61 个测试，含因果性测试（接上未来数据后历史读数必须不变）
+3. **把「可信」变成可验证的**：105 个测试，含因果性测试（接上未来数据后历史读数必须不变）
    和 3 个坏数据负例。
 
 方法学细节与推导见 [docs/METHODOLOGY.md](docs/METHODOLOGY.md)。

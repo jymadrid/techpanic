@@ -13,3 +13,22 @@ pandas==3.0.6
 numpy==2.5.3
 requests==2.34.2
 curl_cffi==0.16.3
+
+# ⚠️ 最后这一行是**必须的**，不是可选项。
+#
+# 本项目是 src-layout（源文件在 src/techpanic/），
+# 光装依赖**不会**让 `python -m techpanic` 可用 —— 包本身还没被安装。
+# 早期版本漏了这一行，于是：
+#   * README 的「双击 start.bat / start.command / start.sh」三种方式全部失败；
+#   * README 的「pip install -r requirements.txt 然后 python -m techpanic」失败；
+#   * docs/QUICKSTART.md 的每一步、examples/ 的四个示例全部失败。
+# 用户看到的是一句英文 No module named techpanic，退出码 1。
+#
+# 为什么 CI 一直没抓到：CI / daily.yml / Colab notebook 都额外做了
+# `pip install -e . --no-deps`，把缺陷完全掩盖了。
+# 现在 requirements.txt 自己带上，任何按文档走的路径都能跑通。
+#
+# `-e .` = 可编辑安装（editable）：把 src/ 挂进 site-packages，
+# 改源码立即生效，不需要重装。`--no-deps` 不在这里写，
+# 因为上面的 pin 已经把依赖列全了，交给 pip 统一解析更安全。
+-e .

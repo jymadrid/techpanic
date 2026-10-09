@@ -213,18 +213,47 @@ def _targets_from_toml(raw: dict[str, Any]) -> tuple[Target, ...]:
     return tuple(targets)
 
 
+def _env_bool(name: str) -> bool:
+    """把 `TECHPANIC_<name>` 读成布尔。未设置或无法识别时返回 False。"""
+    raw = _env(name)
+    if raw is None:
+        return False
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _tri_state(cli_value: Any, env_value: bool) -> bool:
+    """三态取值：命令行显式表态就用它，否则回退环境变量。
+
+    `None` 表示未提供开关；`True` 表示显式开启；公开 API 也允许显式传
+    `False` 覆盖环境变量。argparse 默认用 False 表示未提供开关，因此
+    CLI 必须为这些开关设置 default=None。
+    """
+    if cli_value is None:
+        return bool(env_value)
+    return bool(cli_value)
+
+
 def load_config(
     *,
     data_dir: str | os.PathLike[str] | None = None,
     config_path: str | os.PathLike[str] | None = None,
     overrides: dict[str, Any] | None = None,
 ) -> AppConfig:
-    """按「默认值 ← 用户 TOML ← 环境变量 ← 命令行」组装配置。"""
+    """按「默认值 ← 用户 TOML ← 环境变量 ← 命令行」组装配置。
+
+    显式的 data_dir / config_path 参数优先于对应环境变量；overrides
+    中的 data_dir 优先级最高。offline / refresh 为 None 时回退环境变量，
+    显式 True 或 False 则以调用方为准。CLI 必须区分未传参与显式取值。
+    """
 
     overrides = dict(overrides or {})
 
+    # 命令行（overrides）> 位置参数 data_dir > 环境变量 > 当前目录/data
     resolved_data_dir = Path(
-        overrides.pop("data_dir", None) or _env("DATA_DIR") or data_dir or (Path.cwd() / "data")
+        overrides.pop("data_dir", None)
+        or data_dir
+        or _env("DATA_DIR")
+        or (Path.cwd() / "data")
     ).expanduser()
 
     raw_path = config_path or _env("CONFIG") or None
@@ -311,8 +340,14 @@ def load_config(
         network=network,
         output=output_cfg,
         ui=ui_cfg,
-        offline=bool(overrides.pop("offline", _env("OFFLINE") in {"1", "true", "yes"})),
-        refresh=bool(overrides.pop("refresh", False)),
+        # offline / refresh 的取值有三态：
+        #   True  -> 命令行显式开了
+        #   False -> 命令行显式关了
+        #   None  -> **用户没表态**，此时才读环境变量
+        # 早期 cli.py 无条件传 False，导致 TECHPANIC_OFFLINE=1 永远不生效
+        # （文档 docs/CONFIGURATION.md 专门写了这个变量并配了示例）。
+        offline=_tri_state(overrides.pop("offline", None), _env_bool("OFFLINE")),
+        refresh=_tri_state(overrides.pop("refresh", None), _env_bool("REFRESH")),
         as_of=validate_as_of(overrides.pop("as_of", None)),
         quiet=bool(overrides.pop("quiet", False)),
         verbose=bool(overrides.pop("verbose", False)),

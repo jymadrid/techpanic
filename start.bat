@@ -48,8 +48,12 @@ if errorlevel 1 (
   exit /b 4
 )
 
-rem ---- 3. 装依赖（首次） ----
-if not exist ".venv\.techpanic-installed" (
+rem ---- 3. 装依赖（首次，或旧标记存在但包未安装） ----
+set "NEED_INSTALL="
+if not exist ".venv\.techpanic-installed" set "NEED_INSTALL=1"
+"%VPY%" -m techpanic --version >nul 2>nul
+if errorlevel 1 set "NEED_INSTALL=1"
+if defined NEED_INSTALL (
   echo   [2/3] 正在安装依赖（首次约 2-5 分钟）...
   "%VPY%" -m pip install --upgrade pip --quiet
   "%VPY%" -m pip install -r requirements.txt --quiet
