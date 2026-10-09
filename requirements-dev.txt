@@ -1,0 +1,4 @@
+# 开发与测试依赖（普通用户不需要装）
+-r requirements.txt
+pytest==8.3.4
+ruff==0.8.6

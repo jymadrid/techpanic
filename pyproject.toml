@@ -1,0 +1,60 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "techpanic"
+version = "1.0.0"
+description = "科技板块恐慌指数 PI —— 零 API Key、一键抓取公开数据的 A 股科技板块恐慌度量工具"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "techpanic contributors" }]
+keywords = ["panic-index", "volatility", "china-a-share", "star50", "chinext", "quant", "finance", "akshare"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Financial and Insurance Industry",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Office/Business :: Financial :: Investment",
+  "Natural Language :: Chinese (Simplified)",
+]
+dependencies = [
+  "akshare==1.19.1",
+  "pandas==3.0.6",
+  "numpy==2.5.3",
+  "requests==2.34.2",
+  "curl_cffi==0.16.3",
+]
+
+[project.optional-dependencies]
+dev = ["pytest==8.3.4", "ruff==0.8.6"]
+
+[project.urls]
+Homepage = "https://github.com/OWNER/techpanic"
+Repository = "https://github.com/OWNER/techpanic"
+Issues = "https://github.com/OWNER/techpanic/issues"
+
+[project.scripts]
+techpanic = "techpanic.cli:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = ["network: 需要联网的测试（默认跳过）"]

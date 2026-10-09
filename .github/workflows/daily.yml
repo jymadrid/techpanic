@@ -1,0 +1,57 @@
+name: Daily reading
+
+# 每个交易日收盘后抓取一次，供看板 / 徽章消费。
+# 注意：这**不会**把数据提交回仓库 —— 本仓库零数据入仓是硬性设计。
+# 数据以 workflow artifact 形式保留 30 天。
+on:
+  schedule:
+    # UTC 09:30 = 北京时间 17:30（A 股 15:00 收盘、指数数据落库之后）
+    - cron: "30 9 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reading:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -e . --no-deps
+
+      - name: Compute today's reading
+        run: |
+          python -m techpanic --no-color --json --data-dir data > reading.json 2> run.err || true
+          echo "--- stderr ---"
+          cat run.err || true
+          echo "--- stdout (JSON) ---"
+          cat reading.json || true
+
+      - name: Show human summary
+        run: |
+          if [ -f data/output/summary.md ]; then
+            cat data/output/summary.md
+          else
+            echo "没有生成摘要（可能无数据）"
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: techpanic-reading
+          path: |
+            reading.json
+            run.err
+            data/output/
+          if-no-files-found: warn
+          retention-days: 30

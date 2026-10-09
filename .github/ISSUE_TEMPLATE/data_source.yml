@@ -1,0 +1,49 @@
+name: 🔌 数据源问题 / 新数据源建议
+description: 上游接口变更、抓取失败，或推荐一个不需要 Key 的公开数据源
+title: "[Data] "
+labels: ["data-source"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        数据源是本项目最脆弱的部分（QVIX 来自第三方小站，限速约 8 KB/s）。
+        任何**不需要账号 / API Key** 的替代或补充来源都极有价值。
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: 类型
+      options:
+        - 现有数据源抓取失败（接口变更 / 停服 / 限速）
+        - 推荐新的公开数据源
+        - 怀疑抓到了错误的数据（取错列）
+    validations:
+      required: true
+
+  - type: input
+    id: source
+    attributes:
+      label: 数据源
+      placeholder: 1.optbbs.com / 新浪财经 / 其他
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 证据
+      description: |
+        抓取失败请附完整报错与时间；
+        怀疑取错列请附上你核对过的正确值来源；
+        推荐新数据源请附 URL、字段说明、是否需要登录，以及一次实测耗时。
+      render: shell
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: nokey
+    attributes:
+      label: 关于新数据源
+      options:
+        - label: 该数据源不需要账号、API Key 或付费
+        - label: 该数据源允许自动化访问（或者你已确认其条款）

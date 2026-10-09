@@ -1,0 +1,12 @@
+# 统一换行，避免 Windows/macOS 协作时 CRLF 污染 diff
+* text=auto eol=lf
+
+# CSV 一律按二进制处理，禁止换行转换（输出含 BOM，为 Excel 兼容）
+*.csv -text
+*.xlsx binary
+*.png binary
+
+# 一键启动脚本保持各自平台的换行
+*.bat text eol=crlf
+*.command text eol=lf
+*.sh text eol=lf

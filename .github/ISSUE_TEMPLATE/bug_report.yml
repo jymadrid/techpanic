@@ -1,0 +1,95 @@
+name: 🐛 Bug / 抓取失败
+description: 程序报错、抓不到数据、读数明显不对
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈！请尽量填完整 —— 缺信息会导致我们无法复现。
+        **不要**粘贴任何账号、密钥或私人信息（本项目也不需要它们）。
+
+  - type: textarea
+    id: what
+    attributes:
+      label: 发生了什么
+      description: 清楚描述现象。例如「科创50 的即时口径显示 0.0」。
+    validations:
+      required: true
+
+  - type: textarea
+    id: expect
+    attributes:
+      label: 你期望发生什么
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: 你运行的命令
+      render: shell
+      placeholder: python -m techpanic --debug
+    validations:
+      required: true
+
+  - type: textarea
+    id: output
+    attributes:
+      label: 完整输出（含 --debug 的堆栈）
+      description: 请运行 python -m techpanic --debug 后粘贴全部输出。
+      render: shell
+    validations:
+      required: true
+
+  - type: input
+    id: python
+    attributes:
+      label: Python 版本
+      description: 执行 python -V 的结果
+      placeholder: Python 3.13.5
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: 操作系统
+      placeholder: Windows 11 / Ubuntu 24.04 / macOS 15
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: techpanic 版本
+      description: 执行 python -m techpanic --version 的结果
+      placeholder: techpanic 1.0.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: exitcode
+    attributes:
+      label: 退出码
+      options:
+        - "0（成功）"
+        - "2（部分降级）"
+        - "3（无可用数据）"
+        - "4（环境问题）"
+        - "5（参数错误）"
+        - "130（中断）"
+        - "1 或其他"
+        - "不确定"
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 确认
+      options:
+        - label: 我已经用 --debug 拿到了完整堆栈
+          required: true
+        - label: 我没有粘贴任何密钥或私人信息
+          required: true

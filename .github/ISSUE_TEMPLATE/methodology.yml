@@ -1,0 +1,42 @@
+name: 📐 方法学讨论
+description: 对公式、因子、权重、分级或统计处理的质疑与建议
+title: "[Method] "
+labels: ["methodology"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **这类 Issue 是最受欢迎的。** 我们宁可被证伪，也不要错误的正确感。
+        请尽量给出推导、反例或文献依据 —— 而不仅仅是结论。
+
+  - type: textarea
+    id: claim
+    attributes:
+      label: 你认为哪里有问题
+      description: 越具体越好。例如「A 因子里 doup 用标准差之比在分母接近 0 时不稳定」。
+    validations:
+      required: true
+
+  - type: textarea
+    id: reasoning
+    attributes:
+      label: 推导 / 反例 / 依据
+      description: 数学推导、反例数据、或参考文献。
+    validations:
+      required: true
+
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: 你的建议改法（可选）
+      description: 以及你认为改动后读数是否还与历史可比。
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: ack
+    attributes:
+      label: 确认
+      options:
+        - label: 我理解改变指标定义会让历史读数不可比，也会使现有回归基准失效
+          required: true

@@ -1,0 +1,59 @@
+# ===================================================================
+# techpanic —— 忽略规则
+# 原则：仓库里只留「代码 + 文档」；数据全部运行时抓取，一律不入仓。
+# ===================================================================
+
+# ---------- Python 运行时 ----------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+.eggs/
+build/
+dist/
+wheels/
+.venv/
+venv/
+env/
+ENV/
+
+# ---------- 测试 / 工具缓存 ----------
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.ipynb_checkpoints/
+
+# ---------- 运行时数据（本项目选择：零数据入仓，全部靠抓取）----------
+data/cache/
+data/output/
+data/logs/
+data/_snapshots/
+!data/.gitkeep
+
+# ---------- 本地配置与凭据 ----------
+config.local.toml
+.env
+.env.*
+*.local
+
+# ---------- 临时与备份 ----------
+*.tmp
+*.bak
+*.log
+~*$*
+*_missing.txt
+*.out.txt
+sandbox*/
+
+# ---------- 编辑器 / 操作系统 ----------
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
