@@ -69,7 +69,7 @@ class IndexConfig:
 
 @dataclass(frozen=True)
 class NetworkConfig:
-    source_index: str = "sina"
+    source_index: str = "em"
     timeout_connect: float = 5.0
     timeout_read: float = 15.0
     # QVIX 上游实测：914 KB 文件耗时 1.7s~123s，服务端限速约 8 KB/s 且不支持压缩。

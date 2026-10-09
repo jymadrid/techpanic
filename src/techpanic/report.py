@@ -85,7 +85,15 @@ def to_json_payload(tr: TargetResult, cfg: AppConfig) -> dict:
         "name": tr.target.name,
         "role": tr.target.role,
         "symbol": tr.target.symbol,
+        # 兼容旧字段名；这是已取得价格的截止日，不保证是市场最新交易日。
         "latest_trading_day": None if tr.latest_date is None else str(tr.latest_date.date()),
+        "latest_data_date": None if tr.latest_date is None else str(tr.latest_date.date()),
+        "index_data": {
+            "selected_source": tr.index_source,
+            "source_dates": tr.index_source_dates,
+            "source_errors": tr.index_source_errors,
+            "selection_reason": tr.index_selection_reason,
+        },
         "full": {
             "available": tr.has_full,
             "value": _fmt(tr.full_value, 4),
@@ -96,6 +104,7 @@ def to_json_payload(tr: TargetResult, cfg: AppConfig) -> dict:
         },
         "price_only": {
             "available": tr.has_price,
+            "source": tr.index_source,
             "value": _fmt(tr.price_value, 4),
             "level": tr.price_level,
             "percentile": _fmt(tr.price_percentile, 1),
@@ -259,8 +268,8 @@ def write_run_files(
         )
     lines += [
         "",
-        "> A 完整口径含期权隐含波动率，QVIX 盘后发布，可能滞后 1 个交易日；",
-        "> B 即时口径只用价格，当日收盘即可算。**两者口径不同，不可相减解读。**",
+        "> A 完整口径含期权隐含波动率，截止日期取决于当前 QVIX 数据源；",
+        "> B 即时口径只用价格，取得当天收盘价后才能计算当天读数。**两者口径不同，不可相减解读。**",
         "",
         "> 本指标为研究/观测级度量，不是官方波动率指数，不预测涨跌方向，不构成投资建议。",
     ]

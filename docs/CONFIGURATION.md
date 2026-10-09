@@ -57,7 +57,7 @@ python -m techpanic [选项]
 
 | 键 | 默认 | 含义 |
 |---|---|---|
-| `source_index` | `"sina"` | 指数日线数据源 |
+| `source_index` | `"em"` | 兼容字段，仅决定双源请求先后；日期较新者优先，同日优先东方财富 |
 | `timeout_connect` | `5.0` | 连接超时（秒） |
 | `timeout_read` | `15.0` | 一般请求读超时（秒） |
 | `timeout_qvix` | `150.0` | QVIX 单次读超时（秒） |
@@ -301,3 +301,7 @@ color = "never"
 ```
 
 完整可复制的模板见仓库根目录的 [config.toml.example](../config.toml.example)。
+
+## 双源与缓存补充
+
+指数在线运行始终请求东方财富和新浪，较新截止日优先，同日用东方财富；旧的 source_index=sina 只改变请求次序，不禁用东方财富或改变同日优先级。cache_ttl_hours 仅用于 QVIX 缓存，指数日线不再按此 TTL 跳过查询。离线模式不发网络请求。

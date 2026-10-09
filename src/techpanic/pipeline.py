@@ -25,7 +25,7 @@ from .errors import EXIT_DEGRADED, EXIT_NO_DATA, EXIT_OK
 from .fetch import index_daily
 from .fetch import qvix as qvix_fetch
 
-MIN_INDEX_ROWS = 500
+MIN_INDEX_ROWS = index_daily.MIN_INDEX_ROWS
 MIN_QVIX_ROWS = 300
 
 SayFn = Callable[[str], None]
@@ -63,6 +63,9 @@ class TargetResult:
     # 两个口径的数据日可能不同（QVIX 滞后），必须分开存，否则读数卡/JSON
     # 会出现「用 9-30 的 F 算出 A 值，却展示 10-08 的 F=None」这类不自洽。
     full_components: dict[str, float] = field(default_factory=dict)
+    index_source_dates: dict[str, str] = field(default_factory=dict)
+    index_source_errors: dict[str, str] = field(default_factory=dict)
+    index_selection_reason: str = ""
 
     @property
     def has_full(self) -> bool:
@@ -152,6 +155,8 @@ def run(
     emit("[1/4] 指数日线")
     index_frames: dict[str, pd.DataFrame] = {}
     index_source: dict[str, str] = {}
+    index_notes: dict[str, list[str]] = {}
+    index_selection: dict[str, index_daily.IndexFetchResult] = {}
     # 指数用了陈旧缓存 / 拒绝过损坏缓存 → 本次结果不完整，必须反映到退出码。
     # 以前这种情况退出码仍是 0（＝「全部数据均为最新」），是明确的误报。
     degraded_index = False
@@ -163,16 +168,22 @@ def run(
         frame: pd.DataFrame | None = None
         source = "none"
         fetched = False
-        skipped_fetch = False
+        notes: list[str] = []
 
         if not cfg.offline:
-            fresh = _cache_is_fresh(cfg, f"index_{t.symbol}", cache_path)
-            if not fresh:
-                res = index_daily.fetch_index(t, cfg.network)
-                if res.frame is not None:
-                    frame, source, fetched = res.frame, res.source, True
-            else:
-                skipped_fetch = True
+            # 每次在线运行都抓两源；指数不再使用 QVIX 的 6 小时 TTL。
+            res = index_daily.fetch_index(t, cfg.network)
+            index_selection[t.key] = res
+            for src in ("em", "sina"):
+                label = index_daily.SOURCE_NAMES[src]
+                if src in res.source_dates:
+                    emit(f"      {t.name}：{label} 返回有效日线，截至 {res.source_dates[src]}")
+                elif src in res.source_errors:
+                    emit(f"      {t.name}：{label} 不可用 — {res.source_errors[src]}")
+            if res.frame is not None:
+                frame, source, fetched = res.frame, res.source, True
+                if res.selection_reason:
+                    emit(f"      {t.name}：{res.selection_reason}")
 
         if frame is None:
             cached, chk = store.load_csv_checked(
@@ -188,15 +199,10 @@ def run(
                     cached = None
             if cached is not None:
                 frame, source = cached, "cache"
-                if skipped_fetch:
-                    emit(f"      {t.name}：缓存新鲜，跳过抓取（{chk.rows} 行，截至 {chk.last_date}）")
-                    skipped_fetch = False
-                else:
-                    emit(
-                        f"      {t.name}：抓取失败，使用本地缓存"
-                        f"（{chk.rows} 行，截至 {chk.last_date}）"
-                    )
-                    warnings.append(f"{t.name}：指数使用本地缓存，可能不是最新交易日")
+                why = "离线模式" if cfg.offline else "两源均不可用"
+                emit(f"      {t.name}：{why}，使用本地缓存（{chk.rows} 行，截至 {chk.last_date}）")
+                if not cfg.offline:
+                    notes.append("指数两源均不可用，已退回缓存，无法确认是否为最新收盘数据")
             else:
                 emit(f"      {t.name}：无可用指数数据 → 跳过该标的")
                 warnings.append(f"{t.name}：无可用指数数据，未产出读数")
@@ -225,14 +231,17 @@ def run(
 
         index_frames[t.key] = frame
         index_source[t.key] = source
-        # 只有「抓取失败 → 退回缓存」才算降级。
-        # 不能写成"只要 source == 'cache' 就降级"：缓存仍在 TTL 内、主动跳过
-        # 抓取时数据本来就是最新的，那属于正常成功。否则零滞后运行也会报退出码 2，
-        # 并打印「有降级项（见上方 ⚠ 说明）」而上方形**一条 ⚠ 都没有** ——
-        # 用户被指向一个不存在的东西，脚本也无法区分"数据陈旧"与"只是走了缓存"。
-        if not fetched and source == "cache":
+        now = index_daily.beijing_now()
+        last = frame["date"].iloc[-1].date()
+        if not cfg.as_of and now.weekday() < 5 and now.hour >= 15 and last < now.date():
+            notes.append(
+                f"当前价格数据仅截至 {last}；北京时间 {now.date()} 已过 15:00，"
+                "尚未取得今天日线。若今日休市则无需当日日线；本程序未验证交易日历。"
+            )
+        index_notes[t.key] = notes
+        if notes:
             degraded_index = True
-            warnings.append(f"{t.name}：本次使用本地缓存（未能抓取到新数据）")
+            warnings.extend(f"{t.name}：{note}" for note in notes)
         if fetched:
             fetched_online = True
             emit(f"      {t.name}：{source} OK  {len(frame)} 行  截至 {frame['date'].iloc[-1].date()}")
@@ -343,6 +352,7 @@ def run(
             warnings.append(f"{t.name}：样本不足，未产出读数")
             continue
 
+        selected = index_selection.get(t.key)
         tr = TargetResult(
             target=t,
             frame=d,
@@ -353,6 +363,11 @@ def run(
             qvix_rows=rows,
             qvix_last_date=q_last,
             qvix_stale_days=stale,
+            notes=list(index_notes.get(t.key, [])),
+            degraded=bool(index_notes.get(t.key)),
+            index_source_dates={} if selected is None else selected.source_dates,
+            index_source_errors={} if selected is None else selected.source_errors,
+            index_selection_reason="离线缓存" if selected is None else selected.selection_reason,
         )
 
         fv_row = index_mod.latest_full(d)
@@ -373,7 +388,8 @@ def run(
             if stale > 0:
                 # QVIX 滞后是**正常现象**（盘后发布），但它让「完整口径」不是最新的，
                 # 因此按约定报「部分降级」（退出码 2），而不是假装一切完备。
-                tr.notes.append(f"QVIX 未发布，完整口径停在 {fdate.date()}（滞后 {stale} 个交易日）")
+                tr.notes.append(f"当前 QVIX 数据源未取得更新数据，完整口径停在 {fdate.date()}"
+                                f"（相对已取得价格日期滞后 {stale} 个交易日；不代表市场实际滞后天数）")
                 tr.degraded = True
         else:
             tr.notes.append("QVIX 缺失或样本不足，无法给出完整口径")
@@ -402,10 +418,7 @@ def run(
         results.append(tr)
         emit(f"      {t.name}：完成（{len(d)} 行序列）")
 
-    # 任一指数的日线取自本地缓存（抓取失败，或缓存被判定为"仍然新鲜"）
-    # → 本次读数不是「全部数据最新」，必须置降级。
-    # 以前这种情况退出码仍是 0（脚本里等价于「全部数据均为最新」），是明确误报：
-    # CI/定时任务据此判断会以为数据是新的，实际可能已经陈旧数日。
+    # 两源失败或收盘后无法确认当天数据时明确降级；离线本身不算失败。
     if degraded_index:
         degraded = True
 

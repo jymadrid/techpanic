@@ -195,3 +195,7 @@ Details: [docs/VALIDATION.md](docs/VALIDATION.md), [docs/METHODOLOGY.md](docs/ME
 
 This repository contains **code only** — no data files, snapshots or mirrors.
 All data is fetched at runtime from public interfaces.
+
+## Dual-source index data
+
+Each online run requests both Eastmoney and Sina daily history. Use the valid source with the later end date; prefer Eastmoney on equal dates. Fall back to cached history only if both sources fail validation. Index requests are not skipped by the QVIX cache TTL. Logs and JSON include source dates and selection reasons. A successful request does not guarantee current-day closing data.

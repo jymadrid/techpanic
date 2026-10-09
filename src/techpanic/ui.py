@@ -173,7 +173,7 @@ class Ui:
         if self.quiet or self.suppress_info:
             return
         latest = tr.latest_date.date() if tr.latest_date is not None else "-"
-        self._p(f"【{self._c(tr.target.name, BOLD)}】最新交易日 {latest}")
+        self._p(f"【{self._c(tr.target.name, BOLD)}】价格数据截止 {latest}")
         self._p()
 
         if tr.has_full:
@@ -195,13 +195,13 @@ class Ui:
             self._p(f"      成分：突发性 {s}  不对称性 {a}  前瞻恐惧 {f}")
         else:
             self._p("  A | 完整口径（三因子，含期权）  无值")
-            self._p(f"      {self._c('期权隐含波动率尚未发布，今日只有即时口径', YELLOW)}")
+            self._p(f"      {self._c('未取得可用的期权隐含波动率数据，只能输出价格口径', YELLOW)}")
         self._p()
 
         if tr.has_price:
             pct = "-" if tr.price_percentile is None else f"{tr.price_percentile:.0f}%"
             same = tr.full_date is not None and tr.price_date == tr.full_date
-            tag = "（与 A 同日）" if same else "（含最新交易日）"
+            tag = "（与 A 同日）" if same else "（已取得价格数据的最新一日）"
             level_b = tr.price_level
             self._p(f"  B | 即时口径（两因子，仅价格）  数据日 {tr.price_date.date()}{tag}")
             self._p(
@@ -231,8 +231,8 @@ class Ui:
             return
         self._p("=" * WIDTH)
         self._p("  两个读数怎么用：")
-        self._p("    A 完整口径 = 三因子（含期权隐含波动率）→ 官方读数，QVIX 盘后发布，可能滞后 1 天")
-        self._p("    B 即时口径 = 两因子（只用价格）        → 当日收盘即可算，看最新跳变")
+        self._p("    A 完整口径 = 三因子（含期权隐含波动率）→ 本项目完整读数，截止日期取决于当前 QVIX 数据源")
+        self._p("    B 即时口径 = 两因子（只用价格）        → 已取得当日收盘价后才能计算当日读数")
         self._p("    两者口径不同，差值不单是「今天的冲击」，请勿直接相减解读。")
         self._p()
         self._p("  判读：PI 高 + 方向向下 = 真恐慌；PI 高 + 方向向上 = 狂热（不是恐慌）")
