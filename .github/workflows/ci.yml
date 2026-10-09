@@ -54,7 +54,7 @@ jobs:
           pip install -e . --no-deps
 
       - name: Lint
-        run: ruff check src tests
+        run: ruff check src tests scripts
 
       - name: Tests (offline, no network)
         run: pytest -q

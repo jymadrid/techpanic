@@ -73,5 +73,11 @@ def test_macos_launcher_is_executable_in_git():
 @pytest.mark.parametrize("launcher", ["start.bat", "start.sh", "start.command"])
 def test_launchers_recheck_package_even_with_old_marker(launcher):
     text = (ROOT / launcher).read_text(encoding="utf-8")
-    assert "-m techpanic --version" in text
-    assert "-r requirements.txt" in text
+    if launcher == "start.bat":
+        assert "scripts\\windows_launcher.py" in text
+        helper = (ROOT / "scripts" / "windows_launcher.py").read_text(encoding="utf-8")
+        assert '"techpanic", "--version"' in helper
+        assert '"-r", "requirements.txt"' in helper
+    else:
+        assert "-m techpanic --version" in text
+        assert "-r requirements.txt" in text

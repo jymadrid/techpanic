@@ -16,6 +16,8 @@ def launcher(tmp_path):
     root = tmp_path / "中文 空格 & !"
     root.mkdir()
     shutil.copyfile(ROOT / "start.bat", root / "start.bat")
+    (root / "scripts").mkdir()
+    shutil.copyfile(ROOT / "scripts" / "windows_launcher.py", root / "scripts" / "windows_launcher.py")
     subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(root / ".venv")],
                    check=True, capture_output=True, timeout=60)
     python = root / ".venv" / "Scripts" / "python.exe"
@@ -85,3 +87,34 @@ def test_existing_marker_does_not_skip_pip_bootstrap(launcher):
     assert code == 0, out + err
     assert "ensurepip" in out
     assert "依赖已就绪" in out
+
+
+@pytest.mark.parametrize("code,message", [
+    (0, "完成。"), (2, "部分数据降级"), (1, "发生未预期错误"),
+    (3, "没有拿到数据"), (4, "运行环境有问题"),
+    (5, "命令参数有误"), (130, "已手动中断"), (7, "退出码 7"),
+])
+def test_footer_preserves_all_exit_codes(launcher, code, message):
+    root, _, env = launcher
+    (root / "pip.py").write_text("# pretend installed pip for footer-only test\n", encoding="utf-8")
+    (root / ".venv" / ".techpanic-installed").write_text("ok", encoding="utf-8")
+    (root / "techpanic.py").write_text(
+        'import os,sys\n'
+        'if "--version" in sys.argv: sys.exit(0)\n'
+        'print("\\u26a0 completed computation", flush=True)\n'
+        'sys.exit(int(os.environ["LAUNCHER_TEST_EXIT"]))\n', encoding="utf-8")
+    env["LAUNCHER_TEST_EXIT"] = str(code)
+    command = 'cmd /d /s /c ""' + str(root / "start.bat") + '" <nul"'
+    proc = subprocess.run(command, cwd=root.parent, env=env, capture_output=True, timeout=30)
+    out = proc.stdout.decode("utf-8", "strict")
+    err = proc.stderr.decode("utf-8", "strict")
+    assert proc.returncode == code, out + err
+    assert message in out
+    assert "not recognized" not in out + err
+    assert "不是内部或外部命令" not in out + err
+
+
+def test_batch_entry_has_no_multibyte_content():
+    data = (ROOT / "start.bat").read_bytes()
+    assert data.isascii()
+    assert b"windows_launcher.py" in data
