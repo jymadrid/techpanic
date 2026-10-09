@@ -4,8 +4,8 @@ message: "如果你在研究中使用了本软件，请按以下格式引用。"
 type: software
 authors:
   - name: "techpanic contributors"
-repository-code: "https://github.com/OWNER/techpanic"
-url: "https://github.com/OWNER/techpanic"
+repository-code: "https://github.com/jymadrid/techpanic"
+url: "https://github.com/jymadrid/techpanic"
 license: MIT
 version: 1.0.0
 date-released: "2026-10-09"

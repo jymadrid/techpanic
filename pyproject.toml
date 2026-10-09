@@ -35,9 +35,9 @@ dependencies = [
 dev = ["pytest==8.3.4", "ruff==0.8.6"]
 
 [project.urls]
-Homepage = "https://github.com/OWNER/techpanic"
-Repository = "https://github.com/OWNER/techpanic"
-Issues = "https://github.com/OWNER/techpanic/issues"
+Homepage = "https://github.com/jymadrid/techpanic"
+Repository = "https://github.com/jymadrid/techpanic"
+Issues = "https://github.com/jymadrid/techpanic/issues"
 
 [project.scripts]
 techpanic = "techpanic.cli:main"

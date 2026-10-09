@@ -35,7 +35,7 @@ python --version
 **方法 A：Git（推荐）**
 
 ```
-git clone https://github.com/OWNER/techpanic.git
+git clone https://github.com/jymadrid/techpanic.git
 cd techpanic
 ```
 

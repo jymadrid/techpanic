@@ -32,7 +32,7 @@
 ### 方式二：会用命令行
 
 ```bash
-git clone https://github.com/OWNER/techpanic.git
+git clone https://github.com/jymadrid/techpanic.git
 cd techpanic
 python -m venv .venv
 .venv/Scripts/activate        # Windows；macOS/Linux 用 source .venv/bin/activate

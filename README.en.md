@@ -36,7 +36,7 @@ prints the reading, and writes results to `data/output/`.
 ### Command-line users
 
 ```bash
-git clone https://github.com/OWNER/techpanic.git
+git clone https://github.com/jymadrid/techpanic.git
 cd techpanic
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt

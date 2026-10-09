@@ -1,11 +1,11 @@
 blank_issues_enabled: false
 contact_links:
   - name: 📖 先读文档
-    url: https://github.com/OWNER/techpanic/tree/main/docs
+    url: https://github.com/jymadrid/techpanic/tree/main/docs
     about: 快速上手、配置、数据源、方法学、验证、FAQ —— 大多数问题这里已有答案。
   - name: 💬 使用问题与讨论
-    url: https://github.com/OWNER/techpanic/discussions
+    url: https://github.com/jymadrid/techpanic/discussions
     about: 「怎么读这个读数」「能不能加某个板块」之类的开放讨论。
   - name: 🔒 安全漏洞
-    url: https://github.com/OWNER/techpanic/security/advisories/new
+    url: https://github.com/jymadrid/techpanic/security/advisories/new
     about: 请勿公开披露安全问题，走私密报告渠道。

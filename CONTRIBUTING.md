@@ -9,7 +9,7 @@
 ## 开发环境
 
 ```bash
-git clone https://github.com/OWNER/techpanic.git
+git clone https://github.com/jymadrid/techpanic.git
 cd techpanic
 python -m venv .venv
 # Windows
