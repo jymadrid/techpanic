@@ -243,6 +243,47 @@ def last_success_date(path: Path, dataset: str) -> str | None:
     return None if not entry else entry.get("last_date")
 
 
+@dataclass
+class IntegrityResult:
+    ok: bool
+    detail: str = ""
+
+
+def verify_integrity(cache_file: Path, manifest_path: Path, dataset: str) -> IntegrityResult:
+    """校验缓存文件是否与 manifest 记录的一致。
+
+    为什么值得做：manifest 早就写下了 sha1 与字节数，但**从来没被读过**。
+    于是手工替换或外部程序截断一个缓存文件后，程序会照常读它算出读数 ——
+    实测把 798 行的缓存换成 400 行后，读数从 54.40 变 51.29、分位从 50.7 变 48.5，
+    而退出码与告警**毫无变化**。用户没有任何途径察觉。
+
+    只在 manifest 有记录且本地文件存在时校验；无记录（首次运行）时放行。
+    """
+    if not cache_file.is_file():
+        return IntegrityResult(False, f"{dataset}：缓存文件不存在")
+    entry = manifest_entry(manifest_path, dataset)
+    if not entry:
+        return IntegrityResult(True, "")  # 首次运行，没有可比对的基准
+
+    expected_sha = entry.get("sha1")
+    expected_bytes = entry.get("bytes")
+    if expected_bytes is not None:
+        actual_bytes = cache_file.stat().st_size
+        if int(expected_bytes) != actual_bytes:
+            return IntegrityResult(
+                False,
+                f"{dataset}：缓存已被外部改动（记录 {expected_bytes} 字节，"
+                f"实际 {actual_bytes} 字节）",
+            )
+    if expected_sha:
+        actual_sha = sha1_of(cache_file)
+        if actual_sha != expected_sha:
+            return IntegrityResult(
+                False, f"{dataset}：缓存内容与记录不一致（sha1 不匹配）"
+            )
+    return IntegrityResult(True, "")
+
+
 def snapshot_dir(cache_dir: Path) -> Path:
     """回滚点目录：每次运行前把将要覆盖的文件复制到这里（保留 7 天）。"""
     return cache_dir / "_snapshots"

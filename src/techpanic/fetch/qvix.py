@@ -4,14 +4,18 @@
 * 无表头、无文档、GBK 编码、约 914 KB、单行 80+ 列；
 * 实测单次耗时在 1.7~123 秒之间剧烈抖动（多次读超时），HTTP 明文，第三方小站；
 * 表内有 Excel 错误串（如 \u0060#NUM!\u0060），以及大量历史 0 值；
-* akshare 用硬编码列号切片（如 \u0060iloc[:, 83:87]\u0060）——上游增删一列就会**静默取错数**。
+* 列结构靠硬编码索引定位（与 akshare 一致），上游增删一列就会**静默取错数**。
 
-本模块的三道防线：
+本模块的四道防线：
 
 1. **流式下载 + 字节进度**：慢上游也能让用户看到"在动"，且能设置足够长的读超时。
-2. **列结构断言**：取数后校验日期可解析、数值占比、以及"请求的列号必须落在总列数以内"。
-   结构不符时抛 DataQualityError（→ 降级用缓存），绝不返回一份看起来正常的错数据。
-3. **缓存回退**：抓取失败时保留旧缓存并标注陈旧天数，读数降级为「仅即时口径」。
+2. **列结构断言**：取数后校验日期可解析、总列数足够、以及"请求的列号落在总列数以内"。
+3. **OHLC 结构不变量**（最关键）：4 列必须满足 open ≤ high、low ≤ high、low ≤ close ≤ high。
+   它能拦住「列号整体错位」——取到最低价时数值看起来完全正常，单看 close 列发现不了。
+4. **缓存回退**：抓取失败时保留旧缓存并标注陈旧天数，读数降级为「仅即时口径」。
+
+以上任一断言不通过都抛 DataQualityError（→ 降级用缓存），
+绝不返回一份看起来正常的错数据。
 """
 
 from __future__ import annotations
@@ -28,20 +32,49 @@ from .http import HttpClient, ProgressFn
 
 QVIX_URL = "http://1.optbbs.com/d/csv/d/k.csv"
 
-# 列号（0-based，含）→ 对应上游宽表的 4 列：开/高/低/收
-QVIX_COLUMNS: dict[str, tuple[int, int]] = {
-    "kcb": (82, 85),
-    "cyb": (70, 73),
-    "50etf": (62, 65),
-    "300etf": (34, 37),
-    "500etf": (54, 57),
-    "100etf": (38, 41),
-    "1000index": (78, 81),
-    "300index": (2, 5),
-    "50index": (66, 69),
+# 上游宽表每个品种占**连续 4 列**：open / high / low / close（0-based）。
+#
+# 历史教训（务必保留这段注释）：本项目早期版本把这些索引整体写错了一格
+# （例如 kcb 写成 82~85），结果每个品种取到的都是**当日最低价**，
+# 而 low 与 close 只差约 2%，看上去完全正常 —— 三道防线（列数断言、
+# 中位数合理性、与缓存交叉校验）一道都没拦住，因为缓存本身也是用同一个
+# 错误映射写出来的，自己比自己当然一致。真实读数因此偏差约 0.7 点，
+# 并且把「常态」错报成「警戒」。
+#
+# 现在的防错方式是**结构不变量**（见 _assert_ohlc_invariant）：
+# 4 列必须满足 open ≤ high、low ≤ high、low ≤ close ≤ high。
+# 一旦整体错位一格，取到的 (low, close, next_open, next_high) 会立刻
+# 违反该不变量（实测 kcb 满足率 0.0000、cyb 0.0093，而正确窗口 ≥ 0.99），
+# 这是比「数值看起来合理」强得多的判据。
+#
+# 索引来源：akshare 1.19.1 的 akshare/index/index_option_qvix.py
+# （KCB=83-86、CYB=71-74、50ETF=1-4、300ETF=9-12、500ETF=67-70、
+#  100ETF=75-78、300INDEX=17-20、1000INDEX=25-28、50INDEX=79-82），
+# 并已在真实宽表上用四元组逐值核对。
+#
+# ⚠️ 易错点（本项目踩过）：这里的索引是「上游原始行 split(",") 后的位置」。
+# 上游文件**没有表头行**，且第 0 列就是日期，所以 parts 的位置恰好与 akshare
+# 的 iloc 列号一致 —— 本项目也因此刻意没有把日期列单独摘出来。
+# 写测试造数据时要注意：如果先构造 cells 列表再在前面拼日期，就会整体差 1。
+# 解析结果自检：kcb 应为 801 行、末值 34.57（2026-09-30），不是 low 的 34.55。
+QVIX_OHLC: dict[str, tuple[int, int, int, int]] = {
+    "50etf": (1, 2, 3, 4),
+    "300etf": (9, 10, 11, 12),
+    "300index": (17, 18, 19, 20),
+    "1000index": (25, 26, 27, 28),
+    "500etf": (67, 68, 69, 70),
+    "cyb": (71, 72, 73, 74),
+    "100etf": (75, 76, 77, 78),
+    "50index": (79, 80, 81, 82),
+    "kcb": (83, 84, 85, 86),
 }
 
-MAX_COL_INDEX = max(hi for _, hi in QVIX_COLUMNS.values())
+# 向后兼容的 (首个索引, 收盘索引) 视图；新代码请直接用 QVIX_OHLC。
+QVIX_COLUMNS: dict[str, tuple[int, int]] = {
+    k: (c[0], c[3]) for k, c in QVIX_OHLC.items()
+}
+
+MAX_COL_INDEX = max(c[3] for c in QVIX_OHLC.values())
 
 
 @dataclass
@@ -58,8 +91,10 @@ def parse_wide(text: str, key: str) -> pd.DataFrame:
     """从上游宽表文本中解析出 date/close 两列。"""
     if key not in QVIX_COLUMNS:
         raise DataQualityError(f"未知的 QVIX 标的：{key}")
-    lo, hi = QVIX_COLUMNS[key]
+    quads = QVIX_OHLC[key]
+    hi = quads[3]  # 收盘价列（OHLC 四元组的最后一列）
     rows: list[tuple[str, float]] = []
+    ohlc_rows: list[tuple[float, float, float, float]] = []
     max_cols = 0
 
     for raw_line in text.splitlines():
@@ -80,6 +115,15 @@ def parse_wide(text: str, key: str) -> pd.DataFrame:
             continue  # #NUM! / 空值
         rows.append((date_s, value))
 
+        # 同行的开/高/低三列也要能解析，供结构不变量检验使用
+        try:
+            quad = tuple(
+                float(parts[c].strip().strip('"')) for c in quads
+            )
+        except (ValueError, IndexError):
+            continue
+        ohlc_rows.append(quad)  # type: ignore[arg-type]
+
     if max_cols < MAX_COL_INDEX:
         raise DataQualityError(
             f"QVIX({key}) 上游结构疑似变更：只有 {max_cols + 1} 列，"
@@ -88,12 +132,54 @@ def parse_wide(text: str, key: str) -> pd.DataFrame:
     if not rows:
         raise DataQualityError(f"QVIX({key}) 解析后没有任何有效行")
 
+    _assert_ohlc_invariant(key, ohlc_rows)
+
     df = pd.DataFrame(rows, columns=["date_raw", "close"])
     df["date"] = pd.to_datetime(df["date_raw"], format="mixed", errors="coerce")
     df = df.dropna(subset=["date", "close"])
     df = df[df["close"] > 0]  # 上游历史 0 值一律视为缺失
     df = df.drop(columns=["date_raw"]).sort_values("date").drop_duplicates("date")
     return df.reset_index(drop=True)
+
+
+# 结构不变量阈值。标定依据（真实上游实测）：
+#   正确窗口：满足率 96.1%~99.8%，high>low 占比 98.6%~100%
+#   错位一格：满足率  0.0%~ 64.9%，high>low 占比明显偏低
+# 两组之间没有重叠，阈值取在中间；high>low 这一项单独就能把 9/9 错位窗口打掉。
+OHLC_MIN_ROWS = 100           # 样本行数下限
+OHLC_MIN_SATISFACTION = 0.95  # 不变量满足率下限
+OHLC_MIN_SPREAD = 0.97        # 「high > low」占比下限（挡「4 列其实是同一列/近似列」）
+
+
+def _assert_ohlc_invariant(
+    key: str, quads: list[tuple[float, float, float, float]]
+) -> None:
+    """校验取到的 4 列真的是 open/high/low/close。
+
+    这是本项目最重要的一条防线：它能拦住「列号整体错位」这类
+    数值看起来完全合理的故障 —— 单看 close 列是发现不了的。
+
+    取到的列若不满足 open ≤ high、low ≤ high、low ≤ close ≤ high，
+    说明这 4 列不是一组 OHLC，立即拒绝，绝不用它算读数。
+    """
+    if len(quads) < OHLC_MIN_ROWS:
+        return  # 样本太少，不变量不具统计意义；交由行数断言处理
+
+    arr = np.asarray(quads, dtype=float)
+    open_, high, low, close = arr[:, 0], arr[:, 1], arr[:, 2], arr[:, 3]
+    ok = (open_ <= high) & (low <= high) & (low <= close) & (close <= high)
+    rate = float(ok.mean())
+    spread = float((high > low).mean())
+
+    if rate < OHLC_MIN_SATISFACTION or spread < OHLC_MIN_SPREAD:
+        raise DataQualityError(
+            f"QVIX({key}) 列结构不变量校验失败：取到的 4 列"
+            f"（{QVIX_OHLC[key]}）有 {rate:.2%} 的行满足"
+            f"「开≤高、低≤高、低≤收≤高」（下限 {OHLC_MIN_SATISFACTION:.0%}），"
+            f"高>低 的占比 {spread:.2%}（下限 {OHLC_MIN_SPREAD:.0%}）。"
+            "这通常意味着上游列结构发生变更、本项目的列号已整体错位。"
+            "已拒绝使用该数据（宁可降级，也不用看起来正常的错值）。"
+        )
 
 
 def assert_structure(text: str, key: str, df: pd.DataFrame) -> None:
@@ -134,24 +220,28 @@ def assert_structure(text: str, key: str, df: pd.DataFrame) -> None:
 
 # 交叉校验判据（尺度感知）。
 #
-# ⚠️ 实测事实：**上游每次请求都会重算历史值。**
-#    同一品种、同一列，两次抓取的重叠日期中位偏差约 1%~2%
-#    （科创50 实测 2.07%，创业板指 1.11%），
-#    且新鲜值往往系统性略低（如科创50 中位数 30.4 vs 31.37）。
-#    后果：QVIX 是 10 日平滑量，日度变化本身就小（约 0.5 点），
-#    所以哪怕只有 2% 的修订，也足以把「日度变化的相关系数」压到 0.54~0.71。
+# ⚠️ 请先读这段——这道防线曾经**完全失效**，而且我们还给它编了一个
+#    听起来很合理的解释，把失效说成了"上游的行为"。
 #
-#    因此**不能**用「日度变化相关系数 < 0.95」判为取错列 —— 那会把
-#    完全正常的数据误杀，导致永久退回缓存。这个坑本项目踩过。
+#    事故原貌：列号整体错位一格，取到的是**当日最低价**。缓存也是用同一个
+#    错误映射写出来的，于是"新抓的"和"缓存的"是同一种错误，比值自然为 0，
+#    这道防线一声不吭地放行了。当时观察到的 1%~2% 中位偏差、以及
+#    "新值系统性略低（科创50 30.4 vs 31.37）"，被我们解释成
+#    **"上游每次请求都会重算历史值"**。
 #
-# 正确的判据：把偏差与序列自身的日度波动幅度比较。
-#    列号偏移会让偏差达到「波动水平」的量级（例如把中位数 25 的品种
-#    读成中位数 35 的品种，偏差 ≈10 点，而典型日度波动只有约 0.5 点）；
-#    上游重算造成的偏差则明显小得多。二者相差一个数量级，容易区分。
+#    真相（已推翻，有证据）：那个偏差与"重算"毫无关系，就是
+#    **最低价 vs 收盘价**的差（科创50 当天 low=34.55、close=34.57；
+#    两个中位数 30.4 与 31.37 的差正是 low/close 两列的系统性差）。
+#    证据：相隔约 24 小时的两次下载**逐字节相同**——上游并不重算历史值。
 #
-# 阈值标定（实测）：上游重算造成的比值在 1.5~2.5 之间；
-# 而列号偏移会让偏差达到波动水平的量级 —— 例如把中位数 25 的品种读成
-# 中位数 35 的品种，比值会达到 15~30。取 4.0 作为界，两侧都有数倍余量。
+#    教训：**用同一份有缺陷的实现生成"基准"，再去校验自己，是无效校验。**
+#    真正拦住这类故障的是 assert_structure 里的 OHLC 结构不变量
+#    （实测对 9/9 个错位窗口全部拒绝，对 9/9 个正确窗口全部放行）。
+#
+# 这道缓存交叉校验仍然保留，但它的定位已经降级为**辅助**：
+#    它只能捕捉"新抓取与缓存不一致"的情形，对"两者同样错"无能为力。
+#    阈值按实测标定：正常时两列本该几乎相同（缓存就是上次写入的同一份文件），
+#    中位偏差理应接近 0。因此这里给一个宽松的上限，只拦量级明显不对的情况。
 CROSS_CHECK_MIN_OVERLAP = 100
 CROSS_CHECK_MAX_RATIO = 4.0          # 中位偏差 / 典型日度波动幅度，上限
 CROSS_CHECK_ABS_MEDIAN_CAP = 8.0     # 中位绝对偏差的绝对上限（点）
@@ -160,11 +250,13 @@ CROSS_CHECK_ABS_MEDIAN_CAP = 8.0     # 中位绝对偏差的绝对上限（点�
 def cross_check_cache(fresh: pd.DataFrame, cached: pd.DataFrame | None, key: str) -> None:
     """与本地缓存交叉校验。
 
-    这是最有效的一道防线 —— 对任何标的都自动成立，且能捕捉
-    「列号悄悄偏移」这类最难发现的故障（数值本身看起来完全正常）。
+    **辅助防线，不要依赖它**。它只能发现「新抓取与本地缓存不一致」，
+    对「两边同样取错列」完全无效（缓存正是用同一份实现写出来的 —— 本项目
+    真实事故中它就是这样静默放行的，见上方长注释）。
 
-    判据是**尺度感知**的：中位绝对偏差不得超过典型日度波动幅度的若干倍，
-    另加一个绝对上限。这样既能放行上游的历史重算，又能拦住量级取错。
+    真正拦得住列号偏移的是 _assert_ohlc_invariant。
+    这里的判据是尺度感知的：中位绝对偏差不得超过典型日度波动幅度的若干倍，
+    另加一个绝对上限，用来拦住量级明显不对的情况。
     """
     if cached is None or len(cached) == 0:
         return

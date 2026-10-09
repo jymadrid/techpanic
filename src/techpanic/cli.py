@@ -142,7 +142,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    from .ui import Ui, elapsed_str
+    from .ui import Ui, elapsed_str, force_utf8_stdio
+
+    # 必须在任何输出之前执行：中文 Windows 的 GBK 控制台会把 JSON 写成
+    # GBK 字节流，并让「⚠」在重定向时直接抛 UnicodeEncodeError。
+    force_utf8_stdio()
 
     try:
         cfg = load_config(
@@ -163,7 +167,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  {exc.hint()}", file=sys.stderr)
         return EXIT_CODE_BY_TYPE[ConfigError]
 
-    ui = Ui(color=_want_color(args, cfg), quiet=args.quiet)
+    # --json：stdout 必须只剩一段合法 JSON，因此人类文本改走 stderr。
+    # 颜色也必须关掉 —— ANSI 转义会污染 JSON。
+    json_mode = bool(cfg.json_stdout)
+    ui = Ui(
+        color=False if json_mode else _want_color(args, cfg),
+        quiet=args.quiet,
+        stream=sys.stderr if json_mode else None,
+        suppress_info=json_mode,
+    )
 
     try:
         _preflight()
@@ -182,7 +194,7 @@ def main(argv: list[str] | None = None) -> int:
         ui.info("=" * 74)
         ui.blank()
 
-        result = run(cfg, say=ui.step, progress=ui.progress)
+        result = run(cfg, say=ui.step, progress=None if json_mode else ui.progress)
         ui.end_progress()
 
         ui.blank()
@@ -195,15 +207,23 @@ def main(argv: list[str] | None = None) -> int:
             ui.card(tr)
         ui.footer()
 
-        files = list(result.output_files)
-        from .pipeline import RunResult  # noqa: F401
-
-        files = report_mod.write_run_files(result.targets, cfg, result.exit_code, result.elapsed)
+        files = report_mod.write_run_files(
+            result.targets, cfg, result.exit_code, result.elapsed
+        )
         ui.info(f"  已保存（{len(files)} 个文件）：")
         for f in files:
             ui.info(f"    {f}")
         ui.info(f"  耗时 {elapsed_str(result.elapsed)}")
         ui.info()
+
+        if json_mode:
+            # 唯一的 stdout 输出：完整 payload（与 data/output/latest.json 同构）
+            print(
+                report_mod.dump_json(
+                    report_mod.build_payload(result.targets, cfg, result.exit_code)
+                ),
+                flush=True,
+            )
 
         if result.exit_code == EXIT_NO_DATA:
             ui.err("没有拿到任何数据，本次无法给出读数。")

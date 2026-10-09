@@ -11,16 +11,17 @@ echo
 
 # ---- 1. 找 Python ----
 PY=""
-for cand in python3.13 python3.12 python3.11 python3.10 python3 python; do
+for cand in python3.13 python3.12 python3 python; do
   if command -v "$cand" >/dev/null 2>&1; then
-    if "$cand" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
+    # 依赖（numpy/pandas/akshare）与 tomllib 都要求 >=3.12
+    if "$cand" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)' 2>/dev/null; then
       PY="$cand"; break
     fi
   fi
 done
 
 if [ -z "$PY" ]; then
-  echo "  [错误] 没找到 Python 3.10 或更高版本。"
+  echo "  [错误] 没找到 Python 3.12 或更高版本。"
   echo
   echo "  macOS:  brew install python@3.12"
   echo "  Ubuntu: sudo apt install python3 python3-venv python3-pip"

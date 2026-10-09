@@ -15,6 +15,7 @@ import pandas as pd
 
 from . import store
 from .config import AppConfig
+from .errors import EXIT_NO_DATA
 from .pipeline import TargetResult
 
 JSON_SCHEMA = "v1"
@@ -91,7 +92,15 @@ def to_json_payload(tr: TargetResult, cfg: AppConfig) -> dict:
         "direction": tr.direction,
         "return_1d_pct": _fmt(tr.ret, 3),
         "return_5d_pct": _fmt(tr.ret5, 3),
-        "components": {k: _fmt(v, 3) for k, v in tr.components.items()},
+        # components 取自「即时口径那一行」（= 最新交易日），而 full.value 可能
+        # 来自更早的数据日（QVIX 滞后）。两边都不带日期时，机器消费方无法复算，
+        # 也看不出 A 卡上的「前瞻恐惧」到底是哪一天的值。故显式带上日期。
+        "components": {
+            "data_date": None if tr.price_date is None else str(tr.price_date.date()),
+            "values": {k: _fmt(v, 3) for k, v in tr.components.items()},
+            # 完整口径的 S/A/F 来自它自己的数据日，可能与上面不同
+            "full_data_date": None if tr.full_date is None else str(tr.full_date.date()),
+        },
         "qvix": {
             "series": tr.target.qvix,
             "rows": tr.qvix_rows,
@@ -109,6 +118,9 @@ def build_payload(results: list[TargetResult], cfg: AppConfig, exit_code: int) -
         "generator": "techpanic",
         "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "exit_code": exit_code,
+        # 回测时必须能区分「这是某历史日的读数」还是「今天的最新读数」。
+        # 以前 payload 里完全没有这个字段，下游无法判断。
+        "as_of": cfg.as_of,
         "config": {
             "weights": {
                 "S": cfg.index.weight_s,
@@ -167,12 +179,20 @@ def write_run_files(
 
     payload = build_payload(results, cfg, exit_code)
     payload["elapsed_seconds"] = round(elapsed, 2)
+    # 回测（--date）写的是**历史某一天**的读数，不能覆盖代表"当前"的
+    # latest.json / badge.json —— 否则跑一次回测就会把 README 徽章改成历史值。
+    if cfg.as_of:
+        stamp = out_dir / f"asof_{cfg.as_of}.json"
+        store.atomic_write_json(payload, stamp)
+        written.append(stamp)
+        return written
+
     latest = out_dir / "latest.json"
     store.atomic_write_json(payload, latest)
     written.append(latest)
 
     tech = [tr for tr in results if tr.target.role == "tech" and tr.has_price]
-    if tech:
+    if tech and exit_code != EXIT_NO_DATA:
         lead = max(tech, key=lambda t: t.price_value or 0)
         badge = {
             "schemaVersion": 1,
@@ -180,9 +200,20 @@ def write_run_files(
             "message": f"{lead.price_value:.1f} {lead.price_level}",
             "color": level_color(lead.price_level),
         }
-        path = out_dir / "badge.json"
-        store.atomic_write_json(badge, path)
-        written.append(path)
+    else:
+        # 没有拿到数据（或完全没有读数）时必须**显式改写**徽章。
+        # 以前这里直接跳过，于是上一轮成功运行的 badge.json 原样留下 ——
+        # 最新一次运行其实失败了，README 上的徽章却还在展示几天前的旧读数，
+        # 而且与缓存新鲜度、退出码完全对不上，没人能察觉。
+        badge = {
+            "schemaVersion": 1,
+            "label": "科技恐慌指数",
+            "message": "无数据",
+            "color": "lightgrey",
+        }
+    path = out_dir / "badge.json"
+    store.atomic_write_json(badge, path)
+    written.append(path)
 
     lines = [
         "# 科技板块恐慌指数 PI · 本次运行摘要",

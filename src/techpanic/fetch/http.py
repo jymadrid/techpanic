@@ -23,6 +23,30 @@ from ..errors import NetworkError
 
 ProgressFn = Callable[[int, int | None, float], None]
 
+# 允许的「实收字节 / 声明字节」比例下限。低于它就认为响应被截断。
+MIN_COMPLETE_RATIO = 0.999
+
+
+def _check_truncated(content: bytes, total: int | None, label: str) -> None:
+    """检测响应是否被截断。
+
+    为什么必须做：QVIX 上游是第三方小站，实测会出现连接中途断掉、
+    只返回一部分的情况。如果不比对字节数，**截断的 CSV 会被静默接受**，
+    于是最新几天的数据悄悄消失，而程序还会把「下载不全」报告成
+    「上游未发布，滞后 N 个交易日」—— 把我们的故障说成上游的行为。
+
+    只比对 Content-Length：没有该响应头时无从判断，只能放行
+    （上游常见 chunked 编码，此时不应误报）。
+    """
+    if not total:
+        return
+    ratio = len(content) / total
+    if ratio < MIN_COMPLETE_RATIO:
+        raise NetworkError(
+            f"响应被截断：{label} 只收到 {len(content)} 字节，"
+            f"上游声明 {total} 字节（{ratio:.1%}）。已丢弃这次响应并重试。"
+        )
+
 
 @dataclass
 class FetchResponse:
@@ -106,20 +130,32 @@ class HttpClient:
                         f"下载超时（已用 {time.time() - budget_started:.0f} 秒，"
                         f"超过 {total_budget:.0f} 秒预算）：{progress_label or url}"
                     )
-            # 每次尝试的读超时不得超过剩余预算，避免「两次 150 秒」突破总预算
+            # 每次尝试的读超时不得超过剩余预算，避免「两次 150 秒」突破总预算。
+            # 注意不能加 max(..., 5.0) 之类的下限：剩余预算不足 5 秒时那样会
+            # 反过来突破总预算（实测 3 秒预算跑出 5 秒）。
             read_to = base_to[1] if remaining is None else min(base_to[1], remaining)
-            to = (base_to[0], max(read_to, 5.0))
+            to = (min(base_to[0], read_to), max(read_to, 0.1))
             started = time.time()
             try:
                 resp = self.session.get(
                     url, timeout=to, headers=headers, params=params, stream=progress is not None
                 )
-                if resp.status_code >= 500:
+                # 5xx 与 429/408 都是**可重试**的上游故障。
+                # 4xx 以前被当作成功返回，于是 403/429 限流时既不重试也不报错，
+                # 调用方拿到一个空 body 还以为是正常响应。
+                if resp.status_code >= 500 or resp.status_code in (408, 429):
                     raise NetworkError(f"上游返回 {resp.status_code}")
-                if progress is None:
-                    return FetchResponse(resp.content, resp.status_code, time.time() - started, url)
+                if resp.status_code >= 400:
+                    raise NetworkError(
+                        f"上游返回 {resp.status_code}（该状态码通常不可通过重试解决）"
+                    )
 
                 total = int(resp.headers.get("Content-Length") or 0) or None
+                if progress is None:
+                    content = resp.content
+                    _check_truncated(content, total, progress_label or url)
+                    return FetchResponse(content, resp.status_code, time.time() - started, url)
+
                 chunks: list[bytes] = []
                 got = 0
                 for chunk in resp.iter_content(chunk_size=65536):
@@ -128,7 +164,9 @@ class HttpClient:
                     chunks.append(chunk)
                     got += len(chunk)
                     progress(got, total, time.time() - started)
-                return FetchResponse(b"".join(chunks), resp.status_code, time.time() - started, url)
+                content = b"".join(chunks)
+                _check_truncated(content, total, progress_label or url)
+                return FetchResponse(content, resp.status_code, time.time() - started, url)
             except Exception as exc:  # noqa: BLE001
                 last = exc
         raise NetworkError(f"下载失败（已重试 {n} 次）：{progress_label or url}\n   最后错误：{last}")

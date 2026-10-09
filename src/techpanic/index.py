@@ -36,6 +36,31 @@ def pct_rank(series: pd.Series, min_periods: int = 60) -> pd.Series:
     return series.expanding(min_periods=min_periods).rank(pct=True) * 100.0
 
 
+def _trading_day_return(close: pd.Series, n: int) -> pd.Series:
+    """按**交易日**计算 n 日涨跌幅（%）。
+
+    不能直接用 close.shift(n)：close 虽已 dropna，但上游缓存仍可能缺某一天。
+    一旦缺行，shift(n) 就会跨过 n 个**有效行**而不是 n 个**交易日** ——
+    实测过：少一行会让「近5日涨跌」变成按约 26 个交易日计算
+    （2020-04-09 由 +6.10% 变 -12.08%，方向由「向上」翻成「向下」，
+    按 README 判读表就是「狂热」与「恐慌」的差别，且没有任何警告）。
+
+    这里改为按索引位置回溯：只有当 n 个交易日之前那一行确实存在时才计算，
+    否则返回 NaN。宁可显示「未知」，也不给一个口径错误的百分比。
+    """
+    values = close.to_numpy(dtype=float)
+    n = max(int(n), 1)
+    prev_pos = np.arange(len(values)) - n
+    valid = prev_pos >= 0
+    out = np.full(len(values), np.nan, dtype=float)
+    if valid.any():
+        cur = values[prev_pos[valid] + n]
+        prev = values[prev_pos[valid]]
+        with np.errstate(divide="ignore", invalid="ignore"):
+            out[valid] = (cur / prev - 1.0) * 100.0
+    return pd.Series(out, index=close.index, dtype=float)
+
+
 def compute(
     close: pd.Series,
     qvix: pd.Series | None,
@@ -80,7 +105,7 @@ def compute(
     d["A"] = (pct_rank(d["semi"], mp) + pct_rank(d["doup"], mp)) / 2.0
     d["F"] = pct_rank(d["qvix"].dropna(), mp).reindex(d.index)
 
-    d["ret5"] = (d["close"] / d["close"].shift(cfg.rv_short) - 1.0) * 100.0
+    d["ret5"] = _trading_day_return(d["close"], cfg.rv_short)
     direction = np.where(d["ret5"] < 0, "向下", "向上")
     d["方向"] = np.where(d["ret5"].isna(), "未知", direction)
 

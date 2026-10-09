@@ -7,7 +7,7 @@ name = "techpanic"
 version = "1.0.0"
 description = "科技板块恐慌指数 PI —— 零 API Key、一键抓取公开数据的 A 股科技板块恐慌度量工具"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 license = { text = "MIT" }
 authors = [{ name = "techpanic contributors" }]
 keywords = ["panic-index", "volatility", "china-a-share", "star50", "chinext", "quant", "finance", "akshare"]
@@ -18,8 +18,6 @@ classifiers = [
   "License :: OSI Approved :: MIT License",
   "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
-  "Programming Language :: Python :: 3.10",
-  "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Topic :: Office/Business :: Financial :: Investment",

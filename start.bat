@@ -16,7 +16,7 @@ if not defined PY ( where python >nul 2>nul && set "PY=python" )
 if not defined PY (
   echo   [错误] 没找到 Python。
   echo.
-  echo   请先安装 Python 3.10 或更高版本：https://www.python.org/downloads/
+  echo   请先安装 Python 3.12 或更高版本：https://www.python.org/downloads/
   echo   安装时务必勾选 "Add Python to PATH"。
   echo.
   pause
@@ -38,6 +38,16 @@ if not exist ".venv\Scripts\python.exe" (
 
 set "VPY=.venv\Scripts\python.exe"
 
+rem ---- 2b. 校验 Python 版本（依赖要求 >=3.12，且用到 3.11+ 的 tomllib） ----
+"%~dp0.venv\Scripts\python.exe" -c "import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)"
+if errorlevel 1 (
+  echo   [错误] 需要 Python 3.12 或更高版本，但当前是：
+  "%~dp0.venv\Scripts\python.exe" -V
+  echo   请删除 .venv 目录后，用 3.12+ 重新双击本脚本。
+  pause
+  exit /b 4
+)
+
 rem ---- 3. 装依赖（首次） ----
 if not exist ".venv\.techpanic-installed" (
   echo   [2/3] 正在安装依赖（首次约 2-5 分钟）...
@@ -46,9 +56,11 @@ if not exist ".venv\.techpanic-installed" (
   if errorlevel 1 (
     echo.
     echo   [错误] 依赖安装失败。常见原因：
-    echo     1) 网络不通 —— 试试国内镜像：
+    rem 注意：本块在 if (...) 内，括号必须转义为 ^)，否则 cmd 会提前
+    rem 关闭括号块并以 rc=255 中止 —— 这就是「双击一闪而过」的真实原因。
+    echo     1^) 网络不通 —— 试试国内镜像：
     echo        "%VPY%" -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
-    echo     2) Python 版本过低 —— 需要 3.10 以上。
+    echo     2^) Python 版本过低 —— 需要 3.12 以上。
     echo.
     pause
     exit /b 4
@@ -70,6 +82,7 @@ if "%CODE%"=="2"  echo   完成（部分降级：期权数据可能滞后 1 个�
 if "%CODE%"=="3"  echo   没有拿到数据 —— 请检查网络后重试。
 if "%CODE%"=="4"  echo   运行环境有问题 —— 见上方提示。
 if "%CODE%"=="5"  echo   命令参数有误。
+if "%CODE%"=="1"  echo   发生未预期的错误 —— 请运行 .venv\Scripts\python.exe -m techpanic --debug 查看完整堆栈。
 if "%CODE%"=="130" echo   已手动中断。
 echo.
 echo   结果文件在 data\output\ 目录下。

@@ -33,6 +33,30 @@ LEVEL_COLOR = {
 WIDTH = 74
 
 
+def force_utf8_stdio() -> None:
+    """把 stdout/stderr 切到 UTF-8。
+
+    为什么必须做：中文 Windows 默认代码页是 GBK（cp936）。
+    后果有两个，都很严重：
+
+    1. --json 写出的是 GBK 字节流，下游按 UTF-8 读取会 UnicodeDecodeError
+       （例如「科创」的 GBK 编码 0xBF 0xC6 不是合法 UTF-8）。
+    2. 界面里的「⚠」在 cp936 里**没有**映射，重定向或接管道时会直接抛
+       UnicodeEncodeError，整个程序以退出码 1 崩掉。
+
+    errors="replace" 是最后的兜底：即使终端真的不支持某个字符，
+    也只退化成一个问号，绝不让程序崩。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):  # pragma: no cover - 极端环境下放弃兜底
+            continue
+
+
 def _num(value, digits: int = 0) -> str:
     try:
         f = float(value)
@@ -46,9 +70,21 @@ def _num(value, digits: int = 0) -> str:
 class Ui:
     """把彩色、进度、紧凑输出集中到一处，便于 --no-color / --quiet 统一切换。"""
 
-    def __init__(self, *, color: bool = True, quiet: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        color: bool = True,
+        quiet: bool = False,
+        stream=None,
+        suppress_info: bool = False,
+    ) -> None:
         self.color = color
         self.quiet = quiet
+        # 人类可读文本的输出去向。--json 时全部改走 stderr，
+        # 保证 stdout 上只有一段合法 JSON（可以安全管道给 jq / json.load）。
+        self.stream = stream if stream is not None else sys.stdout
+        # 纯 JSON 模式下不再打印「已保存 N 个文件」这类附加信息。
+        self.suppress_info = suppress_info
         self._progress_active = False
 
     # ------------------------------------------------------------ 基础
@@ -56,40 +92,52 @@ class Ui:
         return f"{code}{text}{RESET}" if self.color else text
 
     def info(self, msg: str = "") -> None:
+        if self.suppress_info:
+            return
         if not self.quiet:
-            print(msg, flush=True)
+            print(msg, file=self.stream, flush=True)
 
     def step(self, msg: str) -> None:
         self._clear_progress()
+        if self.suppress_info:
+            return
         if not self.quiet:
-            print(self._c(msg, BOLD), flush=True)
+            print(self._c(msg, BOLD), file=self.stream, flush=True)
 
     def ok(self, msg: str) -> None:
+        if self.suppress_info:
+            return
         if not self.quiet:
-            print(f"      {self._c('OK ', GREEN)} {msg}", flush=True)
+            print(f"      {self._c('OK ', GREEN)} {msg}", file=self.stream, flush=True)
 
     def warn(self, msg: str) -> None:
+        if self.suppress_info:
+            return
         if not self.quiet:
-            print(f"      {self._c('⚠', YELLOW)} {msg}", flush=True)
+            print(f"      {self._c('⚠', YELLOW)} {msg}", file=self.stream, flush=True)
 
     def err(self, msg: str) -> None:
         print(f"{self._c('✖', RED)} {msg}", file=sys.stderr, flush=True)
 
     def hint(self, msg: str) -> None:
-        print(f"  {self._c('下一步：', BOLD)}{msg}", flush=True)
+        print(f"  {self._c('下一步：', BOLD)}{msg}", file=self.stream, flush=True)
 
     def rule(self, char: str = "-") -> None:
+        if self.suppress_info:
+            return
         if not self.quiet:
-            print(self._c(char * WIDTH, DIM), flush=True)
+            print(self._c(char * WIDTH, DIM), file=self.stream, flush=True)
 
     def blank(self) -> None:
+        if self.suppress_info:
+            return
         if not self.quiet:
             print(flush=True)
 
     # ------------------------------------------------------------ 进度
     def progress(self, label: str, got: int, total: int | None, elapsed: float) -> None:
         """单行覆盖式进度；非 TTY 时静默（避免日志被刷屏）。"""
-        if self.quiet or not sys.stdout.isatty():
+        if self.quiet or not self.stream.isatty():
             return
         mb = got / 1024 / 1024
         if total:
@@ -102,80 +150,86 @@ class Ui:
             )
         else:
             text = f"      {label} 已接收 {mb:.2f} MB  {elapsed:.1f}s"
-        print("\r" + text[:110], end="", flush=True)
+        print("\r" + text[:110], end="", file=self.stream, flush=True)
         self._progress_active = True
 
     def _clear_progress(self) -> None:
         if self._progress_active:
-            print("\r" + " " * 110 + "\r", end="", flush=True)
+            print("\r" + " " * 110 + "\r", end="", file=self.stream, flush=True)
             self._progress_active = False
 
     def end_progress(self) -> None:
         self._clear_progress()
 
     # ------------------------------------------------------------ 读数卡
+    def _p(self, msg: str = "") -> None:
+        """读数卡/页脚的统一出口：--json 模式下整块静默。"""
+        if self.suppress_info:
+            return
+        print(msg, file=self.stream, flush=True)
+
     def card(self, tr) -> None:
         """打印一个标的的双口径读数卡。"""
-        if self.quiet:
+        if self.quiet or self.suppress_info:
             return
         latest = tr.latest_date.date() if tr.latest_date is not None else "-"
-        print(f"【{self._c(tr.target.name, BOLD)}】最新交易日 {latest}")
-        print()
+        self._p(f"【{self._c(tr.target.name, BOLD)}】最新交易日 {latest}")
+        self._p()
 
         if tr.has_full:
             pct = "-" if tr.full_percentile is None else f"{tr.full_percentile:.0f}%"
             level_a = tr.full_level
-            print(f"  A | 完整口径（三因子，含期权）  数据日 {tr.full_date.date()}")
-            print(
+            self._p(f"  A | 完整口径（三因子，含期权）  数据日 {tr.full_date.date()}")
+            self._p(
                 f"      PI = {tr.full_value:5.1f}  "
                 f"【{self._c(level_a, LEVEL_COLOR.get(level_a, ''))}】  历史分位 {pct}"
             )
             s = _num(tr.components.get("S"))
             a = _num(tr.components.get("A"))
             f = _num(tr.components.get("F"))
-            print(f"      成分：突发性 {s}  不对称性 {a}  前瞻恐惧 {f}")
+            self._p(f"      成分：突发性 {s}  不对称性 {a}  前瞻恐惧 {f}")
         else:
-            print("  A | 完整口径（三因子，含期权）  无值")
-            print(f"      {self._c('期权隐含波动率尚未发布，今日只有即时口径', YELLOW)}")
-        print()
+            self._p("  A | 完整口径（三因子，含期权）  无值")
+            self._p(f"      {self._c('期权隐含波动率尚未发布，今日只有即时口径', YELLOW)}")
+        self._p()
 
         if tr.has_price:
             pct = "-" if tr.price_percentile is None else f"{tr.price_percentile:.0f}%"
             same = tr.full_date is not None and tr.price_date == tr.full_date
             tag = "（与 A 同日）" if same else "（含最新交易日）"
             level_b = tr.price_level
-            print(f"  B | 即时口径（两因子，仅价格）  数据日 {tr.price_date.date()}{tag}")
-            print(
+            self._p(f"  B | 即时口径（两因子，仅价格）  数据日 {tr.price_date.date()}{tag}")
+            self._p(
                 f"      PI = {tr.price_value:5.1f}  "
                 f"【{self._c(level_b, LEVEL_COLOR.get(level_b, ''))}】  历史分位 {pct}"
             )
             ret = "-" if tr.ret is None else f"{tr.ret:+.2f}%"
             ret5 = "-" if tr.ret5 is None else f"{tr.ret5:+.2f}%"
-            print(f"      当日 {ret}  近5日 {ret5}  方向 {tr.direction}")
+            self._p(f"      当日 {ret}  近5日 {ret5}  方向 {tr.direction}")
             s = _num(tr.components.get("S"))
             a = _num(tr.components.get("A"))
-            print(f"      成分：突发性 {s}  不对称性 {a}  前瞻恐惧 待发布")
+            self._p(f"      成分：突发性 {s}  不对称性 {a}  前瞻恐惧 待发布")
         else:
-            print("  B | 即时口径（两因子，仅价格）  无值")
-        print()
+            self._p("  B | 即时口径（两因子，仅价格）  无值")
+        self._p()
 
         for note in tr.notes:
-            print(f"  {self._c('⚠', YELLOW)} {note}")
+            self._p(f"  {self._c('⚠', YELLOW)} {note}")
         if tr.notes:
-            print()
+            self._p()
 
     def footer(self) -> None:
-        if self.quiet:
+        if self.quiet or self.suppress_info:
             return
-        print("=" * WIDTH)
-        print("  两个读数怎么用：")
-        print("    A 完整口径 = 三因子（含期权隐含波动率）→ 官方读数，QVIX 盘后发布，可能滞后 1 天")
-        print("    B 即时口径 = 两因子（只用价格）        → 当日收盘即可算，看最新跳变")
-        print("    两者口径不同，差值不单是「今天的冲击」，请勿直接相减解读。")
-        print()
-        print("  判读：PI 高 + 方向向下 = 真恐慌；PI 高 + 方向向上 = 狂热（不是恐慌）")
-        print("  注意：PI 是状态度量（温度计），不预测涨跌方向，不构成投资建议。")
-        print("=" * WIDTH)
+        self._p("=" * WIDTH)
+        self._p("  两个读数怎么用：")
+        self._p("    A 完整口径 = 三因子（含期权隐含波动率）→ 官方读数，QVIX 盘后发布，可能滞后 1 天")
+        self._p("    B 即时口径 = 两因子（只用价格）        → 当日收盘即可算，看最新跳变")
+        self._p("    两者口径不同，差值不单是「今天的冲击」，请勿直接相减解读。")
+        self._p()
+        self._p("  判读：PI 高 + 方向向下 = 真恐慌；PI 高 + 方向向上 = 狂热（不是恐慌）")
+        self._p("  注意：PI 是状态度量（温度计），不预测涨跌方向，不构成投资建议。")
+        self._p("=" * WIDTH)
 
 
 def elapsed_str(seconds: float) -> str:

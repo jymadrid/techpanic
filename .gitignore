@@ -44,6 +44,10 @@ config.local.toml
 # ---------- 临时与备份 ----------
 report.md
 *.tmp
+
+# 内审工作区（不随仓库发布）
+.review/
+
 *.bak
 *.log
 ~*$*

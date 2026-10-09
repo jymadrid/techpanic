@@ -17,13 +17,9 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        python-version: ["3.10", "3.13"]
-        exclude:
-          # 3.10 只在 Linux 上验证，省 CI 额度；3.13 三平台全测
-          - os: windows-latest
-            python-version: "3.10"
-          - os: macos-latest
-            python-version: "3.10"
+        # 最低支持版本是 3.12（numpy 2.5 与 tomllib 的要求，见 pyproject.toml）。
+        # 早先这里写 3.10 是错的：那套组合根本装不上依赖。
+        python-version: ["3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
 
@@ -45,24 +41,22 @@ jobs:
         run: pytest -q
 
       - name: Guard — repository must contain no data files
+        # 依据 **git 索引**判断，而不是扫描工作树。
+        # 早先的写法把 data/ 整个 skip 掉，而 data/ 恰恰是本工具唯一会写数据的
+        # 目录 —— 守卫因此永远看不到真正需要设防的地方，本地 46 个数据文件
+        # 全都逃过检查。改成「被 git 跟踪的数据文件必须为 0」才是有意义的约束。
         shell: python
         run: |
-          import pathlib, sys
-          root = pathlib.Path(".").resolve()
-          bad = []
-          skip = {".git", ".venv", "venv", "htmlcov", ".pytest_cache", "node_modules", "data"}
-          for pat in ("*.csv", "*.json", "*.xlsx", "*.parquet"):
-              for p in root.rglob(pat):
-                  if set(p.parts) & skip:
-                      continue
-                  # 允许仓库自身的元数据文件
-                  if p.name in {"badge.json"}:
-                      continue
-                  bad.append(str(p.relative_to(root)))
+          import subprocess, sys
+          tracked = subprocess.run(
+              ["git", "ls-files"], capture_output=True, text=True, check=True
+          ).stdout.splitlines()
+          pats = (".csv", ".xlsx", ".parquet")
+          bad = [f for f in tracked if f.lower().endswith(pats)]
           if bad:
-              print("仓库内不应包含数据文件：", bad)
+              print("仓库内不应跟踪任何数据文件：", bad)
               sys.exit(1)
-          print("OK：未发现数据文件")
+          print(f"OK：git 跟踪的 {len(tracked)} 个文件中没有数据文件")
 
   end-to-end:
     name: End-to-end with real network
@@ -81,18 +75,23 @@ jobs:
           pip install -r requirements.txt
           pip install -e . --no-deps
       - name: Run against live public data
+        # 刻意不用管道：管道 + pipefail + PIPESTATUS 的组合很容易在
+        # 「正常降级（退出码 2）」上误判为失败，而 2 是本工具的常见正常结果。
         run: |
-          set -o pipefail
-          python -m techpanic --no-color --data-dir data 2>&1 | tee run.log
-          code=${PIPESTATUS[0]}
+          set +e
+          python -m techpanic --no-color --data-dir data > run.log 2>&1
+          code=$?
+          set -e
+          cat run.log
           echo "exit code: $code"
-          # 0 = 完全成功；2 = 部分降级（QVIX 滞后，正常）；3/4 = 真问题
+          # 0 = 完全成功；2 = 部分降级（QVIX 滞后，正常）；3/4/5 = 真问题
           if [ "$code" != "0" ] && [ "$code" != "2" ]; then
             echo "::error::端到端运行失败，退出码 $code"
             exit 1
           fi
           test -f data/output/latest.json
           test -f data/output/panic_index_tech_kcb.csv
+          echo "端到端产物检查通过"
       - name: Upload run log
         if: always()
         uses: actions/upload-artifact@v4

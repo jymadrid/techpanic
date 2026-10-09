@@ -146,6 +146,9 @@ def run(
     emit("[1/4] 指数日线")
     index_frames: dict[str, pd.DataFrame] = {}
     index_source: dict[str, str] = {}
+    # 指数用了陈旧缓存 / 拒绝过损坏缓存 → 本次结果不完整，必须反映到退出码。
+    # 以前这种情况退出码仍是 0（＝「全部数据均为最新」），是明确的误报。
+    degraded_index = False
 
     for t in cfg.targets:
         # 缓存文件名优先用完整代码（sh000688.csv）；兼容早期只写裸代码（000688.csv）的缓存
@@ -169,6 +172,14 @@ def run(
             cached, chk = store.load_csv_checked(
                 cache_path, name=f"指数 {t.name}", min_rows=MIN_INDEX_ROWS
             )
+            if cached is not None:
+                # 缓存完整性：manifest 记录过 sha1/bytes 就必须对得上，
+                # 否则宁可不用它（外部改动过的缓存会静默改变读数）。
+                integ = store.verify_integrity(cache_path, cfg.manifest_path, f"index_{t.symbol}")
+                if not integ.ok:
+                    emit(f"      {t.name}：{integ.detail} → 拒绝使用该缓存")
+                    warnings.append(f"{t.name}：{integ.detail}，已拒绝该缓存")
+                    cached = None
             if cached is not None:
                 frame, source = cached, "cache"
                 if skipped_fetch:
@@ -197,6 +208,9 @@ def run(
 
         index_frames[t.key] = frame
         index_source[t.key] = source
+        # 用了本地缓存（说明抓取失败或缓存新鲜）→ 不是「全部数据最新」
+        if source == "cache":
+            degraded_index = True
         if fetched:
             fetched_online = True
             emit(f"      {t.name}：{source} OK  {len(frame)} 行  截至 {frame['date'].iloc[-1].date()}")
@@ -360,6 +374,13 @@ def run(
             warnings.extend(f"{t.name}：{n}" for n in tr.notes)
         results.append(tr)
         emit(f"      {t.name}：完成（{len(d)} 行序列）")
+
+    # 任一指数的日线取自本地缓存（抓取失败，或缓存被判定为"仍然新鲜"）
+    # → 本次读数不是「全部数据最新」，必须置降级。
+    # 以前这种情况退出码仍是 0（脚本里等价于「全部数据均为最新」），是明确误报：
+    # CI/定时任务据此判断会以为数据是新的，实际可能已经陈旧数日。
+    if degraded_index:
+        degraded = True
 
     # ------------------------------------------------ 4) 输出
     emit("[4/4] 写出结果")

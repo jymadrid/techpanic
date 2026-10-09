@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import sys
 import tomllib
+from datetime import datetime
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -294,7 +295,7 @@ def load_config(
         ui=ui_cfg,
         offline=bool(overrides.pop("offline", _env("OFFLINE") in {"1", "true", "yes"})),
         refresh=bool(overrides.pop("refresh", False)),
-        as_of=overrides.pop("as_of", None),
+        as_of=validate_as_of(overrides.pop("as_of", None)),
         quiet=bool(overrides.pop("quiet", False)),
         verbose=bool(overrides.pop("verbose", False)),
         json_stdout=bool(overrides.pop("json_stdout", False)),
@@ -302,6 +303,38 @@ def load_config(
     if overrides:
         raise ConfigError(f"未知配置项：{', '.join(sorted(overrides))}")
     return cfg
+
+
+_DATE_FORMATS = ("%Y-%m-%d", "%Y/%m/%d")
+
+
+def validate_as_of(value: str | None) -> str | None:
+    """校验 --date / as_of。
+
+    必须在配置层拦住：否则非法输入会一路走到 pandas 里抛出
+    DateParseError，用户看到的是 Python 堆栈和退出码 1，
+    而文档承诺的是「中文说明 + 退出码 5」。
+
+    同时拒绝 2026-02-31 这类「格式对但日期不存在」的值 ——
+    pandas 会把它滚动到 3 月 3 日，静默算出一个与用户预期不同的窗口。
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    parsed = None
+    for fmt in _DATE_FORMATS:
+        try:
+            parsed = datetime.strptime(text, fmt)
+            break
+        except ValueError:
+            continue
+    if parsed is None:
+        raise ConfigError(
+            f"日期格式无法识别：{text!r}。请使用 YYYY-MM-DD，例如 2026-09-30。"
+        )
+    return parsed.strftime("%Y-%m-%d")
 
 
 def with_targets_subset(cfg: AppConfig, *, include_validation: bool) -> AppConfig:

@@ -2,7 +2,7 @@
 
 > One command. Today's panic reading for China's tech sector. No API key, no account, no configuration.
 
-[![Python](https://img.shields.io/badge/python-3.10%2B-blue)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 **techpanic** compresses "how panicked is China's tech sector today?" into a single
