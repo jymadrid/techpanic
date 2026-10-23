@@ -5,6 +5,11 @@ on:
     branches: [main, master]
   pull_request:
   workflow_dispatch:
+    inputs:
+      run_live:
+        description: Explicitly allow live integration check without data uploads
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -81,7 +86,8 @@ jobs:
     name: End-to-end with real network
     runs-on: ubuntu-latest
     needs: lint-and-test
-    continue-on-error: true
+    if: github.event_name == 'workflow_dispatch' && inputs.run_live == true
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -101,7 +107,7 @@ jobs:
           python -m techpanic --no-color --data-dir data > run.log 2>&1
           code=$?
           set -e
-          cat run.log
+          # Do not publish market readings in workflow console or artifacts.
           echo "exit code: $code"
           # 0 = 完全成功；2 = 部分降级（QVIX 滞后，正常）；3/4/5 = 真问题
           if [ "$code" != "0" ] && [ "$code" != "2" ]; then
@@ -111,10 +117,3 @@ jobs:
           test -f data/output/latest.json
           test -f data/output/panic_index_tech_kcb.csv
           echo "端到端产物检查通过"
-      - name: Upload run log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: e2e-run-log
-          path: run.log
-          if-no-files-found: ignore
