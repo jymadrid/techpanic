@@ -15,6 +15,7 @@ import random
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 import requests
@@ -73,7 +74,10 @@ class HttpClient:
         proxy: str | None = None,
         user_agent: str | None = None,
         headers: dict[str, str] | None = None,
+        evidence_store: Any = None,
     ) -> None:
+        self.evidence_store = evidence_store
+        self.evidence_ids: list[str] = []
         self.timeout = (timeout_connect, timeout_read)
         self.retries = max(1, retries)
         self.backoff = backoff or (0.5, 1.5, 4.0)
@@ -136,6 +140,7 @@ class HttpClient:
             read_to = base_to[1] if remaining is None else min(base_to[1], remaining)
             to = (min(base_to[0], read_to), max(read_to, 0.1))
             started = time.time()
+            started_at = datetime.now(timezone.utc).isoformat()
             try:
                 resp = self.session.get(
                     url, timeout=to, headers=headers, params=params, stream=progress is not None
@@ -153,7 +158,12 @@ class HttpClient:
                 total = int(resp.headers.get("Content-Length") or 0) or None
                 if progress is None:
                     content = resp.content
-                    _check_truncated(content, total, progress_label or url)
+                    _check_truncated(
+                        content,
+                        total if not resp.headers.get("Content-Encoding") else None,
+                        progress_label or url,
+                    )
+                    self._record(content, resp, url, params, started_at)
                     return FetchResponse(content, resp.status_code, time.time() - started, url)
 
                 chunks: list[bytes] = []
@@ -165,11 +175,37 @@ class HttpClient:
                     got += len(chunk)
                     progress(got, total, time.time() - started)
                 content = b"".join(chunks)
-                _check_truncated(content, total, progress_label or url)
+                _check_truncated(
+                    content,
+                    total if not resp.headers.get("Content-Encoding") else None,
+                    progress_label or url,
+                )
+                self._record(content, resp, url, params, started_at)
                 return FetchResponse(content, resp.status_code, time.time() - started, url)
             except Exception as exc:  # noqa: BLE001
                 last = exc
-        raise NetworkError(f"下载失败（已重试 {n} 次）：{progress_label or url}\n   最后错误：{last}")
+        raise NetworkError(
+            f"下载失败（已重试 {n} 次）：{progress_label or url}\n   最后错误：{last}"
+        )
+
+    def _record(self, content, response, url, params, started_at):
+        if self.evidence_store is not None:
+            headers = {
+                k: v
+                for k, v in response.headers.items()
+                if k.lower() not in {"set-cookie", "cookie", "authorization"}
+            }
+            ident = self.evidence_store.record_response(
+                content,
+                url=url,
+                final_url=getattr(response, "url", url),
+                status=response.status_code,
+                headers=headers,
+                params=params,
+                started_at=started_at,
+                received_at=datetime.now(timezone.utc).isoformat(),
+            )
+            self.evidence_ids.append(ident)
 
     def get_text(
         self,

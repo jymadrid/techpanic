@@ -10,11 +10,11 @@ from techpanic import levels
 
 def test_classify_boundaries():
     a = (10.0, 20.0, 30.0, 40.0)
-    assert levels.classify(9.9, a) == "平静"
-    assert levels.classify(10.0, a) == "常态"
-    assert levels.classify(20.0, a) == "警戒"
-    assert levels.classify(30.0, a) == "恐慌"
-    assert levels.classify(40.0, a) == "极度恐慌"
+    assert levels.classify(9.9, a) == "低位"
+    assert levels.classify(10.0, a) == "中低位"
+    assert levels.classify(20.0, a) == "中高位"
+    assert levels.classify(30.0, a) == "高位"
+    assert levels.classify(40.0, a) == "极高位"
     assert levels.classify(float("nan"), a) == levels.NO_VALUE
 
 

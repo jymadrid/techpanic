@@ -1,4 +1,5 @@
 """指数日线三源：三源都请求，较新日期优先，同日优先东方财富。"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -29,6 +30,8 @@ class IndexFetchResult:
     source_errors: dict[str, str] = field(default_factory=dict)
     selection_reason: str = ""
     warnings: list[str] = field(default_factory=list)
+    vintage_ids: dict[str, str] = field(default_factory=dict)
+    source_comparisons: dict[str, dict] = field(default_factory=dict)
 
 
 def beijing_now() -> datetime:
@@ -39,8 +42,16 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
     """拒绝无效日期/价格与不足样本；不拼接三源，不冒用盘中日线。"""
     out = df.copy()
     out.columns = [str(c).lstrip("\ufeff") for c in out.columns]
-    out = out.rename(columns={"日期": "date", "开盘": "open", "最高": "high",
-                              "最低": "low", "收盘": "close", "成交量": "volume"})
+    out = out.rename(
+        columns={
+            "日期": "date",
+            "开盘": "open",
+            "最高": "high",
+            "最低": "low",
+            "收盘": "close",
+            "成交量": "volume",
+        }
+    )
     if out.columns.duplicated().any() or not {"date", "close"}.issubset(out.columns):
         raise ValueError("缺少或重复 date/close 列")
     out = out[[c for c in ("date", "open", "high", "low", "close", "volume") if c in out]]
@@ -72,22 +83,41 @@ def _fetch_em(target: Target, client: HttpClient, budget: float) -> pd.DataFrame
     market = "1" if target.symbol.startswith("sh") else "0"
     response = client.get_bytes(
         "https://push2his.eastmoney.com/api/qt/stock/kline/get",
-        params={"secid": f"{market}.{code}", "klt": "101", "fqt": "0",
-                "beg": "19900101", "end": beijing_now().strftime("%Y%m%d"), "lmt": "100000",
-                "fields1": "f1,f2,f3,f4,f5,f6",
-                "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61"},
+        params={
+            "secid": f"{market}.{code}",
+            "klt": "101",
+            "fqt": "0",
+            "beg": "19900101",
+            "end": beijing_now().strftime("%Y%m%d"),
+            "lmt": "100000",
+            "fields1": "f1,f2,f3,f4,f5,f6",
+            "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
+        },
         headers={"Referer": "https://quote.eastmoney.com/"},
-        total_budget=budget, progress_label=f"东方财富 {target.symbol}",
+        total_budget=budget,
+        progress_label=f"东方财富 {target.symbol}",
     )
     data = json.loads(response.content).get("data")
     if not isinstance(data, dict) or not data.get("klines"):
         raise ValueError("东方财富返回空日线")
     if str(data.get("code")) != code:
         raise ValueError("东方财富返回的标的代码不匹配")
-    return pd.DataFrame([row.split(",") for row in data["klines"]], columns=[
-        "date", "open", "close", "high", "low", "volume", "amount",
-        "amplitude", "pct_change", "change", "turnover",
-    ])
+    return pd.DataFrame(
+        [row.split(",") for row in data["klines"]],
+        columns=[
+            "date",
+            "open",
+            "close",
+            "high",
+            "low",
+            "volume",
+            "amount",
+            "amplitude",
+            "pct_change",
+            "change",
+            "turnover",
+        ],
+    )
 
 
 def _fetch_tx(target: Target, client: HttpClient, budget: float) -> pd.DataFrame:
@@ -101,9 +131,12 @@ def _fetch_tx(target: Target, client: HttpClient, budget: float) -> pd.DataFrame
             raise TimeoutError("腾讯完整历史获取超出预算")
         text = client.get_text(
             "https://proxy.finance.qq.com/ifzqgtimg/appstock/app/newfqkline/get",
-            params={"_var": "kline_day", "param":
-                    f"{target.symbol},day,{year}-01-01,{year}-12-31,640,"},
-            total_budget=remaining, progress_label=f"腾讯 {target.symbol} {year}",
+            params={
+                "_var": "kline_day",
+                "param": f"{target.symbol},day,{year}-01-01,{year}-12-31,640,",
+            },
+            total_budget=remaining,
+            progress_label=f"腾讯 {target.symbol} {year}",
         ).strip()
         if text.startswith("kline_day="):
             text = text.split("=", 1)[1]
@@ -119,8 +152,9 @@ def _fetch_tx(target: Target, client: HttpClient, budget: float) -> pd.DataFrame
             raise ValueError(f"腾讯 {year} 缺少未复权 day 数据")
         if any(not isinstance(row, list) or len(row) < 6 for row in rows):
             raise ValueError(f"腾讯 {year} 日线格式错误")
-        frame = pd.DataFrame([row[:6] for row in rows], columns=[
-            "date", "open", "close", "high", "low", "volume"])
+        frame = pd.DataFrame(
+            [row[:6] for row in rows], columns=["date", "open", "close", "high", "low", "volume"]
+        )
         dates = pd.to_datetime(frame["date"], errors="coerce")
         if dates.isna().any():
             raise ValueError(f"腾讯 {year} 返回无效日期")
@@ -139,8 +173,10 @@ def _fetch_sina(target: Target, client: HttpClient, budget: float) -> pd.DataFra
     import py_mini_racer
 
     response = client.get_text(
-        zh_sina_index_stock_hist_url.format(target.symbol), params={"d": "2020_2_4"},
-        total_budget=budget, progress_label=f"新浪 {target.symbol}",
+        zh_sina_index_stock_hist_url.format(target.symbol),
+        params={"d": "2020_2_4"},
+        total_budget=budget,
+        progress_label=f"新浪 {target.symbol}",
     )
     encoded = response.split("=", 1)[1].split(";", 1)[0].replace('"', "").strip()
     with py_mini_racer.MiniRacer() as context:
@@ -149,14 +185,21 @@ def _fetch_sina(target: Target, client: HttpClient, budget: float) -> pd.DataFra
     return pd.DataFrame(rows)
 
 
-def fetch_index(target: Target, net: NetworkConfig) -> IndexFetchResult:
+def fetch_index(target: Target, net: NetworkConfig, *, evidence_store=None) -> IndexFetchResult:
     """无论第一源成功与否都抓三源；截止日较新者优先，同日使用东方财富。"""
     frames: dict[str, pd.DataFrame] = {}
     dates: dict[str, str] = {}
     errors: dict[str, str] = {}
-    client = HttpClient(timeout_connect=net.timeout_connect, timeout_read=net.timeout_read,
-                        retries=net.retries, backoff=net.backoff, jitter=net.jitter,
-                        proxy=net.proxy, user_agent=net.user_agent)
+    client = HttpClient(
+        timeout_connect=net.timeout_connect,
+        timeout_read=net.timeout_read,
+        retries=net.retries,
+        backoff=net.backoff,
+        jitter=net.jitter,
+        proxy=net.proxy,
+        user_agent=net.user_agent,
+        evidence_store=evidence_store,
+    )
     budget = (net.timeout_connect + net.timeout_read) * max(net.retries, 1) + sum(net.backoff)
     # 兼容旧配置：source_index 仅决定请求先后，不能覆盖日期/同日东方财富优先规则。
     order = list(SOURCE_NAMES)
@@ -164,11 +207,27 @@ def fetch_index(target: Target, net: NetworkConfig) -> IndexFetchResult:
         order.remove(net.source_index)
         order.insert(0, net.source_index)
     adapters = {"em": _fetch_em, "tx": _fetch_tx, "sina": _fetch_sina}
+    vintages = {}
     try:
         for source in order:
             try:
+                raw_start = len(client.evidence_ids)
                 raw = adapters[source](target, client, budget)
                 frame = _normalize(raw)
+                if evidence_store is not None:
+                    vintages[source] = evidence_store.record_frame(
+                        f"index_{target.symbol}",
+                        source,
+                        frame,
+                        raw_ids=client.evidence_ids[raw_start:],
+                        semantics={
+                            "instrument": target.symbol,
+                            "instrument_type": target.instrument_type,
+                            "price_basis": target.price_basis,
+                            "unit": target.unit,
+                            "parser_version": "index-v2-audit",
+                        },
+                    )
                 frames[source] = frame
                 dates[source] = frame["date"].iloc[-1].date().isoformat()
             except Exception as exc:  # noqa: BLE001
@@ -177,31 +236,53 @@ def fetch_index(target: Target, net: NetworkConfig) -> IndexFetchResult:
     finally:
         client.close()
     if not frames:
-        return IndexFetchResult(target.symbol, None, "none", "；".join(
-            f"{SOURCE_NAMES[s]}：{error}" for s, error in errors.items()), dates, errors)
+        return IndexFetchResult(
+            target.symbol,
+            None,
+            "none",
+            "；".join(f"{SOURCE_NAMES[s]}：{error}" for s, error in errors.items()),
+            dates,
+            errors,
+        )
     source = max(frames, key=lambda s: (dates[s], SOURCE_PRIORITY[s]))
     tied = [s for s in frames if dates[s] == dates[source]]
     if len(frames) == 1:
         reason = f"其余源不可用，采用{SOURCE_NAMES[source]}"
     elif len(tied) > 1:
-        reason = f"截止日期同为 {dates[source]}，按东方财富 > 腾讯 > 新浪优先采用{SOURCE_NAMES[source]}"
+        reason = (
+            f"截止日期同为 {dates[source]}，按东方财富 > 腾讯 > 新浪优先采用{SOURCE_NAMES[source]}"
+        )
     else:
         reason = f"{SOURCE_NAMES[source]}截止日期更新，采用{SOURCE_NAMES[source]}"
     warnings = []
     chosen_dates = set(frames[source]["date"])
     start, end = frames[source]["date"].min(), frames[source]["date"].max()
+    comparisons = {}
     for other, frame in frames.items():
         if other == source:
             continue
+        from ..source_impact import compare_sources
+        from ..config import IndexConfig
+        comparisons[other] = compare_sources(frames[source], frame, IndexConfig())
+        flips = comparisons[other].get("production_histories", {}).get("label_flip_count", 0)
+        if flips:
+            warnings.append(f"与{SOURCE_NAMES[other]}历史相比有 {flips} 个价格分级翻转；已在 audit.source_impact 披露，不代表哪源为真值")
         missing = sorted(set(frame.loc[frame["date"].between(start, end), "date"]) - chosen_dates)
         if missing:
             examples = "、".join(str(d.date()) for d in missing[:3])
-            warnings.append(f"{SOURCE_NAMES[source]}历史在共同覆盖范围内比{SOURCE_NAMES[other]}少 "
-                            f"{len(missing)} 个日期（如 {examples}）；未混入另一源补齐，历史分位可能有差异")
-    return IndexFetchResult(target.symbol, frames[source], source, None, dates, errors, reason, warnings)
+            warnings.append(
+                f"{SOURCE_NAMES[source]}历史在共同覆盖范围内比{SOURCE_NAMES[other]}少 "
+                f"{len(missing)} 个日期（如 {examples}）；未混入另一源补齐，历史分位可能有差异"
+            )
+    return IndexFetchResult(
+        target.symbol, frames[source], source, None, dates, errors, reason, warnings, vintages, comparisons
+    )
 
 
 def is_index_source_alive(net: NetworkConfig) -> tuple[bool, str]:
     res = fetch_index(Target("probe", "探活", "sh000688", "kcb"), net)
-    return (False, res.error or "三源均不可用") if res.frame is None else (
-        True, f"{res.source} / {len(res.frame)} 行；{res.selection_reason}")
+    return (
+        (False, res.error or "三源均不可用")
+        if res.frame is None
+        else (True, f"{res.source} / {len(res.frame)} 行；{res.selection_reason}")
+    )

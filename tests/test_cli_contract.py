@@ -53,6 +53,8 @@ def test_quiet_json_is_identical_to_plain_json(seeded_data_dir):
     da = json.loads(a.stdout.decode("utf-8"))
     db = json.loads(b.stdout.decode("utf-8"))
     # generated_at 会变，比较实质内容
+    for item in da["results"] + db["results"]:
+        item["audit"].pop("report_at", None)
     assert da["results"] == db["results"]
     assert da["schema"] == db["schema"]
 

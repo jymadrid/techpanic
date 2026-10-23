@@ -28,6 +28,13 @@ class Target:
     symbol: str
     qvix: str
     role: str = "tech"
+    instrument_type: str = "index"
+    price_basis: str = "price_index"
+    unit: str = "index_points"
+    publisher: str = "unverified"
+    price_decimal_places: int | None = None
+    qvix_underlying: str = "unverified"
+    qvix_identity_status: str = "proxy_unverified"
 
 
 DEFAULT_TARGETS: tuple[Target, ...] = (
@@ -53,6 +60,17 @@ class IndexConfig:
     frozen_anchors: tuple[float, float, float, float] = (45.0, 55.0, 63.0, 71.0)
 
     def xcheck(self) -> None:
+        import math
+
+        if (
+            any(
+                not math.isfinite(v) or v < 0 for v in (self.weight_s, self.weight_a, self.weight_f)
+            )
+            or self.weight_s + self.weight_a <= 0
+        ):
+            raise ConfigError("权重须为有限非负数，价格口径权重之和必须大于0")
+        if self.ema_span < 1 or self.annualization <= 0:
+            raise ConfigError("EMA跨度和年化因子必须为正")
         total = self.weight_s + self.weight_a + self.weight_f
         if abs(total - 1.0) > 1e-9:
             raise ConfigError(f"[index] 三个权重之和必须为 1.0，当前为 {total:.6f}")
@@ -120,6 +138,14 @@ class AppConfig:
     quiet: bool = False
     verbose: bool = False
     json_stdout: bool = False
+    archive_evidence: bool = False
+    knowledge_as_of: str | None = None
+    calendar_path: Path | None = None
+    reference_dir: Path | None = None
+
+    @property
+    def evidence_dir(self) -> Path:
+        return self.data_dir / "evidence"
 
     @property
     def cache_dir(self) -> Path:
@@ -135,7 +161,20 @@ class AppConfig:
 
     @property
     def output_dir(self) -> Path:
-        return self.data_dir / "output"
+        root = self.data_dir / "output"
+        if self.knowledge_as_of:
+            import hashlib
+
+            return (
+                root
+                / "replays"
+                / hashlib.sha256(
+                    (self.knowledge_as_of + "|" + str(self.as_of)).encode()
+                ).hexdigest()[:16]
+            )
+        if self.as_of:
+            return root / "historical" / self.as_of
+        return root
 
     @property
     def log_dir(self) -> Path:
@@ -208,6 +247,13 @@ def _targets_from_toml(raw: dict[str, Any]) -> tuple[Target, ...]:
                 symbol=str(spec["symbol"]),
                 qvix=str(spec["qvix"]),
                 role=str(spec.get("role", "tech")),
+                instrument_type=str(spec.get("instrument_type", "index")),
+                price_basis=str(spec.get("price_basis", "price_index")),
+                unit=str(spec.get("unit", "index_points")),
+                publisher=str(spec.get("publisher", "unverified")),
+                price_decimal_places=spec.get("price_decimal_places"),
+                qvix_underlying=str(spec.get("qvix_underlying", "unverified")),
+                qvix_identity_status="proxy_unverified",
             )
         )
     return tuple(targets)
@@ -250,10 +296,7 @@ def load_config(
 
     # 命令行（overrides）> 位置参数 data_dir > 环境变量 > 当前目录/data
     resolved_data_dir = Path(
-        overrides.pop("data_dir", None)
-        or data_dir
-        or _env("DATA_DIR")
-        or (Path.cwd() / "data")
+        overrides.pop("data_dir", None) or data_dir or _env("DATA_DIR") or (Path.cwd() / "data")
     ).expanduser()
 
     raw_path = config_path or _env("CONFIG") or None
@@ -352,7 +395,27 @@ def load_config(
         quiet=bool(overrides.pop("quiet", False)),
         verbose=bool(overrides.pop("verbose", False)),
         json_stdout=bool(overrides.pop("json_stdout", False)),
+        archive_evidence=bool(overrides.pop("archive_evidence", False)),
+        knowledge_as_of=overrides.pop("knowledge_as_of", None),
+        calendar_path=Path(overrides.pop("calendar_path")).expanduser()
+        if overrides.get("calendar_path")
+        else None,
+        reference_dir=Path(overrides.pop("reference_dir")).expanduser()
+        if overrides.get("reference_dir")
+        else None,
     )
+    overrides.pop("calendar_path", None)
+    overrides.pop("reference_dir", None)
+    if cfg.knowledge_as_of:
+        try:
+            from .evidence import timestamp
+
+            timestamp(cfg.knowledge_as_of)
+        except ValueError as exc:
+            raise ConfigError(str(exc)) from exc
+        if cfg.archive_evidence or cfg.refresh:
+            raise ConfigError("knowledge-as-of 只读重放不能同时 archive/refresh")
+        cfg = replace(cfg, offline=True)
     if overrides:
         raise ConfigError(f"未知配置项：{', '.join(sorted(overrides))}")
     return cfg
@@ -384,9 +447,7 @@ def validate_as_of(value: str | None) -> str | None:
         except ValueError:
             continue
     if parsed is None:
-        raise ConfigError(
-            f"日期格式无法识别：{text!r}。请使用 YYYY-MM-DD，例如 2026-09-30。"
-        )
+        raise ConfigError(f"日期格式无法识别：{text!r}。请使用 YYYY-MM-DD，例如 2026-09-30。")
     return parsed.strftime("%Y-%m-%d")
 
 

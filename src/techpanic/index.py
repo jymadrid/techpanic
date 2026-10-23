@@ -3,20 +3,20 @@
 三因子结构::
 
     S 突发性   = ½·z(ΔRV20) + ½·z(RV5/RV20 − 1)
-    A 不对称性 = ½·z(下行半方差占比) + ½·z(下跌波动/上涨波动)
-    F 前瞻恐惧 = z(QVIX)                      ← 期权盘后发布，当日可能缺失
+    A 不对称性 = ½·z(截断负收益中心化方差占比) + ½·z(下跌波动/上涨波动)
+    F 隐含波动代理 = z(QVIX)                      ← 期权盘后发布，当日可能缺失
     PI = 0.40·S + 0.35·A + 0.25·F
     PI_smooth = EMA(PI, 3)
 
 两条独立口径：
 
-* **A 完整口径**（三因子，含期权）：官方读数，但 QVIX 盘后发布，可能滞后 1 个交易日。
-* **B 即时口径**（两因子，只用价格，除以 0.75 归一化）：当日收盘即可算。
+* **A 完整口径**（三因子，含期权）：本项目约定读数；第三方 QVIX 标的身份未验证。
+* **B 即时口径**（两因子，只用价格，除以 0.75 归一化）：仅在取得当日最终收盘价后计算。
 
 **两条口径不可相减解读。** 差值是「数据新鲜度」与「成分构成」的叠加，
 把它当成「今天的单日冲击」是错的。
 
-所有 z 值都用**扩展窗口分位**（pct rank），严格因果、无前视。
+所有 z 值都用**扩展窗口分位**（pct rank），日期前缀因果；不等于历史发布时间已知。
 """
 
 from __future__ import annotations
@@ -37,42 +37,7 @@ def pct_rank(series: pd.Series, min_periods: int = 60) -> pd.Series:
 
 
 def _return_over_n_rows(close: pd.Series, n: int) -> pd.Series:
-    """计算 n 日涨跌幅（%）：**按序列中的有效行**回溯 n 行。
-
-    ## 这个函数的能力边界（请务必读完再改）
-
-    它是 `close.shift(n)` 的等价实现，**不是**严格意义上的
-    "n 个自然交易日收益"。两者在序列完整时完全一致；一旦序列缺行，
-    它跨过的是 n 个**有效行**，实际可能对应更多交易日。
-
-    ## 为什么没有被"修成"真正的交易日口径
-
-    作者尝试过，结论是**做不到，硬做会引入更大的错误**：
-
-    1. 正确算法需要一个**权威交易日历**，而不是上证指数自身的日期序列
-       （否则就是循环论证："我们的缓存是完整的，因为我们假设它是完整的"）。
-    2. 即使用 `pd.bdate_range`（周一至周五）去近似，也会把**春节、国庆**
-       这类真实休市当成"缺数据"。实测在本仓库的缓存上：
-         科创50   1637 行，bdate_range 认为"缺" 129 天
-         创业板指 3969 行，bdate_range 认为"缺" 299 天
-       其中绝大多数是长假休市。若按此置 NaN，会凭空抹掉约 13% 的
-       「近5日涨跌」——而用户看到"未知"的原因只是我们用了错误的日历。
-    3. A 股交易日历无法从价格数据中**唯一推断**："周一至周五没有数据"
-       既可能是"休市"，也可能是"上游漏了一天"。二者不能靠日期形状区分。
-
-    所以这里选择**做能确定的事**，而不是假装能确定：
-      * 涨跌幅按有效行计算（序列完整时即等于交易日口径）；
-      * 由 `_cache_gaps` 检测"可疑缺口"并在运行时显式告警，
-        把判断权交给用户，而不是静默改变数值。
-        详见 pipeline.py 里对缓存缺口的告警。
-
-    ## 历史教训
-
-    "近5日涨跌"曾被误当作 26 个交易日口径的原因不是本函数，而是
-    `compute()` 里把 `dropna` 后的**过滤表**传了进来 —— 中间缺行会让
-    shift 跨得更远。现在传入的是完整序列（缓存写盘时不允许日期乱序或重复，
-    见 `store.check_frame`），因此正常路径不会出现这个偏差。
-    """
+    """按未过滤价格索引回溯 n 行；日历缺失行已 reindex 时保持 NaN。"""
     values = close.to_numpy(dtype=float)
     n = max(int(n), 1)
     prev_pos = np.arange(len(values)) - n
@@ -107,6 +72,7 @@ def detect_cache_gaps(dates) -> list[tuple[str, str, int]]:
     for i in np.nonzero(deltas > SUSPICIOUS_GAP_DAYS)[0]:
         out.append((str(ordered[i].date()), str(ordered[i + 1].date()), int(deltas[i])))
     out.sort(key=lambda t: -t[2])
+    return out
 
 
 def compute(
@@ -125,8 +91,13 @@ def compute(
     返回列：close/ret/rv20/rv5/dRV/RV52/semi/doup/S/A/F/PI_full_raw/PI_full/
     PI_price_raw/PI_price/level_full/level_price/方向/source
     """
+    cfg.xcheck()
     close = pd.to_numeric(close, errors="coerce").astype(float)
-    r = close.pct_change()
+    close = close.where(np.isfinite(close) & (close > 0))
+    if close.index.has_duplicates or not close.index.is_monotonic_increasing:
+        raise ValueError("价格日期必须唯一且升序")
+    r = close.pct_change(fill_method=None)
+    original_ret5 = _return_over_n_rows(close, cfg.rv_short)
     ret = r * 100.0
     rv20 = r.rolling(cfg.rv_window).std() * np.sqrt(cfg.annualization) * 100.0
     rv5 = r.rolling(cfg.rv_short).std() * np.sqrt(cfg.annualization) * 100.0
@@ -139,13 +110,14 @@ def compute(
         d["qvix"] = np.nan
     else:
         q = pd.to_numeric(qvix.reindex(d.index), errors="coerce").astype(float)
-        d["qvix"] = q.replace(0.0, np.nan)
+        d["qvix"] = q.where(np.isfinite(q) & (q > 0))
 
     d["dRV"] = d["rv20"].diff()
     d["RV52"] = d["rv5"] / d["rv20"] - 1.0
     d["semi"] = neg.rolling(cfg.rv_window).var() / ret.rolling(cfg.rv_window).var()
     d["doup"] = neg.rolling(cfg.rv_window).std() / pos.rolling(cfg.rv_window).std()
 
+    d = d.replace([np.inf, -np.inf], np.nan)
     d = d.dropna(subset=["dRV", "RV52", "semi", "doup"])
 
     mp = cfg.z_min_periods
@@ -153,7 +125,7 @@ def compute(
     d["A"] = (pct_rank(d["semi"], mp) + pct_rank(d["doup"], mp)) / 2.0
     d["F"] = pct_rank(d["qvix"].dropna(), mp).reindex(d.index)
 
-    d["ret5"] = _return_over_n_rows(d["close"], cfg.rv_short)
+    d["ret5"] = original_ret5.reindex(d.index)
     direction = np.where(d["ret5"] < 0, "向下", "向上")
     d["方向"] = np.where(d["ret5"].isna(), "未知", direction)
 

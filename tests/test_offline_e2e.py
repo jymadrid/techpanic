@@ -55,7 +55,7 @@ def test_json_summary_fields(seeded_data_dir):
     for key in ("target", "name", "price_only", "full", "components", "qvix", "anchors", "notes"):
         assert key in payload
     assert payload["price_only"]["available"] is True
-    assert payload["price_only"]["level"] in ("平静", "常态", "警戒", "恐慌", "极度恐慌")
+    assert payload["price_only"]["level"] in ("低位", "中低位", "中高位", "高位", "极高位")
 
 
 def test_no_cache_no_network_exits_3_with_guidance(tmp_path, capsys):

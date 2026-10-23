@@ -186,13 +186,13 @@ class Ui:
             )
             # 用**完整口径那一行**的成分：full_value 正是用这三个数算出来的。
             # 以前这里取的是"最新行"的成分，而那行的 F 通常是 NaN，
-            # 于是读数卡显示「前瞻恐惧 待发布」，可读数明明是用某个 F 算出来的 ——
+            # 于是读数卡显示「隐含波动代理 待发布」，可读数明明是用某个 F 算出来的 ——
             # 展示与计算不自洽，用户无法复算。
             fc = tr.full_components or tr.components
             s = _num(fc.get("S"))
             a = _num(fc.get("A"))
             f = _num(fc.get("F"))
-            self._p(f"      成分：突发性 {s}  不对称性 {a}  前瞻恐惧 {f}")
+            self._p(f"      成分：突发性 {s}  不对称性 {a}  隐含波动代理 {f}")
         else:
             self._p("  A | 完整口径（三因子，含期权）  无值")
             self._p(f"      {self._c('未取得可用的期权隐含波动率数据，只能输出价格口径', YELLOW)}")
@@ -216,11 +216,15 @@ class Ui:
             # 即时口径只用 S 和 A；F 在此口径下不被使用，
             # 所以这里写「不参与」而不是「待发布」——后者会让人以为
             # 这个读数还在等 QVIX，实际上它本来就不需要 QVIX。
-            self._p(f"      成分：突发性 {s}  不对称性 {a}  （前瞻恐惧不参与本口径）")
+            self._p(f"      成分：突发性 {s}  不对称性 {a}  （隐含波动代理不参与本口径）")
         else:
             self._p("  B | 即时口径（两因子，仅价格）  无值")
         self._p()
 
+        if tr.audit:
+            self._p("  审计：金融有效性证据不足；QVIX 标的代理未验证。")
+            mode = tr.audit.get("calculation_mode", "unknown")
+            self._p(f"  计算模式：{mode}；日历状态：{tr.audit.get('calendar', {}).get('status', 'unknown')}")
         for note in tr.notes:
             self._p(f"  {self._c('⚠', YELLOW)} {note}")
         if tr.notes:
@@ -235,8 +239,8 @@ class Ui:
         self._p("    B 即时口径 = 两因子（只用价格）        → 已取得当日收盘价后才能计算当日读数")
         self._p("    两者口径不同，差值不单是「今天的冲击」，请勿直接相减解读。")
         self._p()
-        self._p("  判读：PI 高 + 方向向下 = 真恐慌；PI 高 + 方向向上 = 狂热（不是恐慌）")
-        self._p("  注意：PI 是状态度量（温度计），不预测涨跌方向，不构成投资建议。")
+        self._p("  判读：高分表示相对历史极端；方向只描述收益符号，不证明恐慌、狂热或预测能力。")
+        self._p("  注意：PI 是约定的相对市场压力，不是心理恐慌概率或官方指数；金融有效性证据不足。")
         self._p("=" * WIDTH)
 
 

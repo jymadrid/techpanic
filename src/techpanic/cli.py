@@ -35,7 +35,7 @@ from .errors import (
     exit_code_for,
 )
 
-DESCRIPTION = "科技板块恐慌指数 PI：一条命令拿到今天 A 股科技板块的恐慌读数。"
+DESCRIPTION = "科技板块恐慌指数 PI：约定的相对市场压力观测；金融有效性未验证。"
 
 EPILOG = """示例
   python -m techpanic                    抓取公开数据并打印今日读数（默认）
@@ -98,7 +98,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="忽略缓存，强制重新抓取（也可用 TECHPANIC_REFRESH=1）",
     )
     p.add_argument("--date", dest="as_of", metavar="YYYY-MM-DD", help="只使用该日期及之前的数据")
-    p.add_argument("--json", dest="json_stdout", action="store_true", help="把 JSON 结果打印到标准输出")
+    p.add_argument(
+        "--archive-evidence",
+        action="store_true",
+        help="显式允许仅本地留存响应证据；默认关闭，不上传",
+    )
+    p.add_argument(
+        "--knowledge-as-of", metavar="ISO_DATETIME", help="只读重放当时已留存的数据，必须包含时区"
+    )
+    p.add_argument(
+        "--reference-dir", metavar="DIRECTORY", help="本地同对象参考 CSV/元数据目录，缺证据不标通过"
+    )
+    p.add_argument("--calendar", metavar="JSON", help="带来源与覆盖范围的本地交易会话日历")
+    p.add_argument(
+        "--json", dest="json_stdout", action="store_true", help="把 JSON 结果打印到标准输出"
+    )
     p.add_argument("--with-sse50", action="store_true", help="额外计算上证50（非科技，仅方法验证）")
     p.add_argument("--no-color", action="store_true", help="关闭彩色输出（重定向到文件时自动关闭）")
     p.add_argument("--quiet", action="store_true", help="只输出最终结果")
@@ -122,8 +136,7 @@ def _preflight() -> None:
             missing.append(package)
     if missing:
         raise DependencyError(
-            f"缺少依赖：{', '.join(missing)}。\n"
-            "   请先安装：pip install -r requirements.txt"
+            f"缺少依赖：{', '.join(missing)}。\n" "   请先安装：pip install -r requirements.txt"
         )
     try:
         import akshare  # noqa: F401
@@ -157,7 +170,10 @@ def _check_sources(cfg, ui) -> int:
         ui.err(f"akshare 不可用：{exc}")
         return EXIT_ENV
 
-    alive, detail = index_daily.is_index_source_alive(cfg.network)
+    if cfg.offline:
+        alive, detail = True, "离线环境检查完成，未探测网络或验证市场数据"
+    else:
+        alive, detail = index_daily.is_index_source_alive(cfg.network)
     if alive:
         ui.ok(f"指数源可用（{detail}）")
     else:
@@ -182,8 +198,17 @@ def main(argv: list[str] | None = None) -> int:
 
     force_utf8_stdio()
 
+    actual = sys.argv[1:] if argv is None else argv
+    if actual and actual[0] == "audit":
+        from .audit_cli import main as audit_main
+
+        try:
+            return audit_main(actual[1:])
+        except ConfigError as exc:
+            print(str(exc), file=sys.stderr)
+            return EXIT_USAGE
     parser = build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(actual)
 
     try:
         cfg = load_config(
@@ -196,6 +221,10 @@ def main(argv: list[str] | None = None) -> int:
                 "quiet": args.quiet,
                 "verbose": args.verbose,
                 "json_stdout": args.json_stdout,
+                "archive_evidence": args.archive_evidence,
+                "knowledge_as_of": args.knowledge_as_of,
+                "calendar_path": args.calendar,
+                "reference_dir": args.reference_dir,
             },
         )
         cfg = with_targets_subset(cfg, include_validation=args.with_sse50)
@@ -218,7 +247,22 @@ def main(argv: list[str] | None = None) -> int:
         _preflight()
 
         if args.check:
-            return _check_sources(cfg, ui)
+            code = _check_sources(cfg, ui)
+            if json_mode:
+                from .report import dump_json
+
+                print(
+                    dump_json(
+                        {
+                            "check": "environment_and_sources",
+                            "exit_code": code,
+                            "offline": cfg.offline,
+                            "financial_validation": "insufficient_evidence",
+                        }
+                    ),
+                    flush=True,
+                )
+            return code
 
         from . import report as report_mod
         from .pipeline import run

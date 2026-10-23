@@ -66,6 +66,7 @@ class TargetResult:
     index_source_dates: dict[str, str] = field(default_factory=dict)
     index_source_errors: dict[str, str] = field(default_factory=dict)
     index_selection_reason: str = ""
+    audit: dict = field(default_factory=dict)
 
     @property
     def has_full(self) -> bool:
@@ -141,8 +142,38 @@ def run(
     say: SayFn | None = None,
     progress: ProgressFn | None = None,
 ) -> RunResult:
-    """执行一次完整运行。"""
-    started = datetime.now()
+    """执行一次完整运行，证据留存默认关闭。"""
+    from .evidence import EvidenceStore
+
+    if cfg.archive_evidence or cfg.knowledge_as_of:
+        if cfg.knowledge_as_of and not (cfg.evidence_dir / "observations.sqlite3").is_file():
+            from .errors import ConfigError
+
+            raise ConfigError("没有本地证据库，不能进行当时已知重放；不能用当前缓存替代")
+        with EvidenceStore(cfg.evidence_dir, read_only=bool(cfg.knowledge_as_of)) as evidence:
+            return _run(cfg, say=say, progress=progress, evidence=evidence)
+    return _run(cfg, say=say, progress=progress)
+
+
+def _run(cfg: AppConfig, *, say=None, progress=None, evidence=None) -> RunResult:
+    started = index_daily.beijing_now()
+    from .sessions import load_calendar
+
+    try:
+        calendar = load_calendar(cfg.calendar_path) if cfg.calendar_path else None
+    except (ValueError, OSError, KeyError, TypeError) as exc:
+        from .errors import ConfigError
+
+        raise ConfigError(f"本地日历无效：{exc}") from exc
+    report_at = (
+        datetime.fromisoformat(cfg.knowledge_as_of.replace("Z", "+00:00"))
+        if cfg.knowledge_as_of
+        else started
+    )
+    if cfg.as_of and not cfg.knowledge_as_of:
+        from .sessions import BEIJING
+
+        report_at = datetime.fromisoformat(cfg.as_of + "T15:00:00").replace(tzinfo=BEIJING)
     cfg.ensure_dirs()
     emit: SayFn = say or (lambda _msg: "")
 
@@ -157,6 +188,7 @@ def run(
     index_source: dict[str, str] = {}
     index_notes: dict[str, list[str]] = {}
     index_selection: dict[str, index_daily.IndexFetchResult] = {}
+    evidence_meta: dict[str, dict] = {}
     # 指数用了陈旧缓存 / 拒绝过损坏缓存 → 本次结果不完整，必须反映到退出码。
     # 以前这种情况退出码仍是 0（＝「全部数据均为最新」），是明确的误报。
     degraded_index = False
@@ -172,7 +204,11 @@ def run(
 
         if not cfg.offline:
             # 每次在线运行都抓三源；指数不再使用 QVIX 的 6 小时 TTL。
-            res = index_daily.fetch_index(t, cfg.network)
+            res = (
+                index_daily.fetch_index(t, cfg.network)
+                if evidence is None
+                else index_daily.fetch_index(t, cfg.network, evidence_store=evidence)
+            )
             index_selection[t.key] = res
             notes.extend(res.warnings)
             for src in ("em", "tx", "sina"):
@@ -186,6 +222,43 @@ def run(
                 if res.selection_reason:
                     emit(f"      {t.name}：{res.selection_reason}")
 
+        if cfg.knowledge_as_of:
+            candidates_replay = []
+            for src in index_daily.SOURCE_NAMES:
+                replayed, meta = evidence.replay_frame(
+                    f"index_{t.symbol}", cfg.knowledge_as_of, src
+                )
+                if replayed is not None:
+                    replay_cutoff = pd.Timestamp(report_at.astimezone(index_daily.BEIJING).date())
+                    if report_at.astimezone(index_daily.BEIJING).time().replace(tzinfo=None) < (
+                        calendar.close_time
+                        if calendar is not None
+                        else __import__("datetime").time(15)
+                    ):
+                        replayed = replayed.loc[replayed["date"] < replay_cutoff]
+                    else:
+                        replayed = replayed.loc[replayed["date"] <= replay_cutoff]
+                    if cfg.as_of:
+                        replayed = replayed.loc[replayed["date"] <= pd.Timestamp(cfg.as_of)]
+                    if replayed.empty:
+                        continue
+                    candidates_replay.append(
+                        (
+                            str(replayed["date"].max()),
+                            index_daily.SOURCE_PRIORITY[src],
+                            replayed,
+                            src,
+                            meta,
+                        )
+                    )
+            if not candidates_replay:
+                emit(f"      {t.name}：此前未留存可用证据，禁止回退当前缓存")
+                continue
+            _, _, frame, source, meta = max(candidates_replay, key=lambda x: x[:2])
+            if meta.get("semantics", {}).get("instrument") not in {None, t.symbol}:
+                from .errors import ConfigError
+                raise ConfigError("留存数据标的身份与请求指数不一致")
+            evidence_meta[t.key] = meta
         if frame is None:
             cached, chk = store.load_csv_checked(
                 cache_path, name=f"指数 {t.name}", min_rows=MIN_INDEX_ROWS
@@ -230,11 +303,46 @@ def run(
                 "「近5日涨跌」按有效行计算会因此偏长，请谨慎引用。"
             )
 
+        report_market_time = report_at.astimezone(index_daily.BEIJING)
+        cutoff = pd.Timestamp(report_market_time.date())
+        if cfg.as_of:
+            cutoff = min(cutoff, pd.Timestamp(cfg.as_of))
+        invalid_prices = ~pd.to_numeric(frame["close"], errors="coerce").map(
+            lambda v: pd.notna(v) and float(v) > 0 and abs(float(v)) != float("inf")
+        )
+        if invalid_prices.any():
+            notes.append(
+                f"价格存在 {int(invalid_prices.sum())} 个无效值，保留缺失不作为有效当天收盘"
+            )
+            frame.loc[invalid_prices, "close"] = float("nan")
+        is_pre_close = report_market_time.time().replace(tzinfo=None) < (
+            calendar.close_time if calendar is not None else __import__("datetime").time(15)
+        )
+        frame = frame.loc[
+            frame["date"] < cutoff if is_pre_close else frame["date"] <= cutoff
+        ].copy()
+        if frame.empty:
+            continue
         index_frames[t.key] = frame
         index_source[t.key] = source
-        now = index_daily.beijing_now()
+        now = report_at.astimezone(index_daily.BEIJING)
         last = frame["date"].iloc[-1].date()
-        if not cfg.as_of and now.weekday() < 5 and now.hour >= 15 and last < now.date():
+        if calendar is not None:
+            expected = calendar.expected_completed(report_at)
+            missing = calendar.missing_sessions(frame["date"])
+            if missing:
+                notes.append(
+                    f"按提供日历覆盖段缺少 {len(missing)} 个会话；仅在日历覆盖完整价格历史时按会话重索引，否则收益仅按观测行"
+                )
+            if expected is not None and last < expected.date():
+                notes.append(f"价格数据截至 {last}，提供日历的最近已完成会话为 {expected.date()}")
+        if (
+            calendar is None
+            and not cfg.as_of
+            and now.weekday() < 5
+            and now.hour >= 15
+            and last < now.date()
+        ):
             notes.append(
                 f"当前价格数据仅截至 {last}；北京时间 {now.date()} 已过 15:00，"
                 "尚未取得今天日线。若今日休市则无需当日日线；本程序未验证交易日历。"
@@ -245,7 +353,11 @@ def run(
             warnings.extend(f"{t.name}：{note}" for note in notes)
         if fetched:
             fetched_online = True
-            emit(f"      {t.name}：{source} OK  {len(frame)} 行  截至 {frame['date'].iloc[-1].date()}")
+            emit(
+                f"      {t.name}：{source} OK  {len(frame)} 行  截至 {frame['date'].iloc[-1].date()}"
+            )
+            if cfg.as_of:
+                continue  # 历史重算不能截断当前行情缓存
             store.backup(cache_path)
             store.atomic_write_csv(frame, cache_path, encoding="utf-8-sig")
             store.update_manifest(
@@ -267,6 +379,7 @@ def run(
     )
     qvix_frames: dict[str, pd.DataFrame] = {}
     qvix_meta: dict[str, tuple[str, int, pd.Timestamp | None]] = {}
+    qvix_evidence_meta: dict[str, dict] = {}
     keys = tuple(sorted({t.qvix for t in cfg.targets}))
     fetched_qvix: dict[str, qvix_fetch.QvixFetchResult] = {}
 
@@ -274,6 +387,7 @@ def run(
         _cache_is_fresh(cfg, f"qvix_{k}", cfg.qvix_dir / f"{k}.csv") for k in keys
     )
     if not cfg.offline and not qvix_cache_fresh:
+
         def _progress(got: int, total: int | None, elapsed: float) -> None:
             if progress is not None:
                 progress("QVIX 下载", got, total, elapsed)
@@ -283,6 +397,7 @@ def run(
             cfg.network,
             cache_paths={k: cfg.qvix_dir / f"{k}.csv" for k in keys},
             progress=_progress,
+            **({"evidence_store": evidence} if evidence is not None else {}),
         )
     elif not cfg.offline:
         emit(
@@ -291,14 +406,40 @@ def run(
         )
 
     for key in keys:
+        if cfg.knowledge_as_of:
+            replayed, meta = evidence.replay_frame(f"qvix_{key}", cfg.knowledge_as_of, "optbbs")
+            if replayed is None:
+                qvix_meta[key] = ("none", 0, None)
+                continue
+            replayed = replayed.loc[
+                replayed["date"] <= pd.Timestamp(report_at.astimezone(index_daily.BEIJING).date())
+            ]
+            if replayed.empty:
+                qvix_meta[key] = ("none", 0, None)
+                continue
+            if meta.get("semantics", {}).get("instrument") not in {None, key}:
+                from .errors import ConfigError
+                raise ConfigError("留存 QVIX 序列身份与请求键不一致")
+            qvix_evidence_meta[key] = meta
+            qvix_frames[key] = replayed
+            qvix_meta[key] = ("evidence", len(replayed), replayed["date"].max())
+            continue
         got = fetched_qvix.get(key)
+        if got is not None and got.frame is None:
+            warnings.append(f"QVIX({key})：本次抓取失败，缓存不代表最新：{got.error}")
+            degraded_index = True
         if got is not None and got.frame is not None:
+            if got.vintage_id:
+                qvix_evidence_meta[key] = {"vintage_id": got.vintage_id, "source": "optbbs"}
             fetched_online = True
             last = pd.to_datetime(got.frame["date"].iloc[-1])
             stale = _stale_trading_days(all_dates, last)
             qvix_frames[key] = got.frame
             qvix_meta[key] = ("optbbs", len(got.frame), last)
             cache_path = cfg.qvix_dir / f"{key}.csv"
+            if cfg.as_of:
+                emit(f"      {key}：历史计算使用新抓取数据但不覆盖当前缓存")
+                continue
             store.backup(cache_path)
             store.atomic_write_csv(got.frame, cache_path, encoding="utf-8-sig")
             store.update_manifest(
@@ -310,7 +451,9 @@ def run(
                 file_path=cache_path,
                 stale_days=stale,
             )
-            emit(f"      {key}：optbbs OK  {len(got.frame)} 行  截至 {last.date()}  （{got.elapsed:.1f}s）")
+            emit(
+                f"      {key}：optbbs OK  {len(got.frame)} 行  截至 {last.date()}  （{got.elapsed:.1f}s）"
+            )
             continue
 
         if got is not None and got.error:
@@ -321,7 +464,9 @@ def run(
             stale = _stale_trading_days(all_dates, last)
             qvix_frames[key] = cached
             qvix_meta[key] = ("cache", len(cached), last)
-            emit(f"      {key}：使用本地缓存  {len(cached)} 行  截至 {last.date()}（滞后 {stale} 个交易日）")
+            emit(
+                f"      {key}：使用本地缓存  {len(cached)} 行  截至 {last.date()}（滞后 {stale} 个交易日）"
+            )
             warnings.append(f"QVIX({key})：使用本地缓存，滞后 {stale} 个交易日")
         else:
             qvix_meta[key] = ("none", 0, None)
@@ -337,12 +482,30 @@ def run(
             continue
 
         close = frame.set_index("date")["close"].astype(float)
+        calendar_horizon_verified = (
+            calendar is not None
+            and close.index.min() >= calendar.coverage_start
+            and close.index.max() <= calendar.coverage_end
+        )
+        if calendar_horizon_verified:
+            sessions = calendar.sessions[
+                (calendar.sessions >= close.index.min()) & (calendar.sessions <= close.index.max())
+            ]
+            close = close.reindex(sessions)
         qv = qvix_frames.get(t.qvix)
+        if qv is not None:
+            qv = qv.loc[
+                qv["date"] <= pd.Timestamp(report_at.astimezone(index_daily.BEIJING).date())
+            ]
+            if cfg.as_of:
+                qv = qv.loc[qv["date"] <= pd.Timestamp(cfg.as_of)]
         q_series = None if qv is None else qv.set_index("date")["close"].astype(float)
 
         source, rows, q_last = qvix_meta.get(t.qvix, ("none", 0, None))
         # 口径必须统一：QVIX 的「滞后几个交易日」要拿**全市场交易日集合**算，
         # 不能用单个标的自己的索引（那样会把该标的自身的停牌日也算成滞后）。
+        if qv is not None:
+            q_last = qv["date"].max() if len(qv) else None
         stale = _stale_trading_days(all_dates, q_last) if q_last is not None else 0
 
         d = index_mod.compute(close, q_series, cfg.index)
@@ -389,8 +552,10 @@ def run(
             if stale > 0:
                 # QVIX 滞后是**正常现象**（盘后发布），但它让「完整口径」不是最新的，
                 # 因此按约定报「部分降级」（退出码 2），而不是假装一切完备。
-                tr.notes.append(f"当前 QVIX 数据源未取得更新数据，完整口径停在 {fdate.date()}"
-                                f"（相对已取得价格日期滞后 {stale} 个交易日；不代表市场实际滞后天数）")
+                tr.notes.append(
+                    f"当前 QVIX 数据源未取得更新数据，完整口径停在 {fdate.date()}"
+                    f"（相对已取得价格日期滞后 {stale} 个交易日；不代表市场实际滞后天数）"
+                )
                 tr.degraded = True
         else:
             tr.notes.append("QVIX 缺失或样本不足，无法给出完整口径")
@@ -413,6 +578,83 @@ def run(
             tr.notes.append("连即时口径都算不出来（样本不足）")
             tr.degraded = True
 
+        expected = calendar.expected_completed(report_at) if calendar is not None else None
+
+        def freshness(date):
+            if date is None:
+                return {"status": "missing", "stale_sessions": None}
+            count = calendar.stale_sessions(date, report_at) if calendar is not None else None
+            return {
+                "status": "unknown" if count is None else "current" if count == 0 else "stale",
+                "stale_sessions": count,
+            }
+
+        tr.audit = {
+            "measurement": "relative_market_stress",
+            "construct_validity": "insufficient_evidence",
+            "reference_validation": "not_run",
+            "qvix_identity": t.qvix_identity_status,
+            "calendar": {
+                "status": "provided_not_authenticated" if calendar else "unknown",
+                "sha256": calendar.digest if calendar else None,
+                "expected_completed": str(expected.date()) if expected is not None else None,
+            },
+            "report_at": report_at.isoformat(),
+            "calculation_mode": "knowledge_as_of"
+            if cfg.knowledge_as_of
+            else "retrospective_current_history"
+            if cfg.as_of
+            else "latest_observed",
+            "archive_enabled": cfg.archive_evidence,
+            "selected_evidence": evidence_meta.get(t.key, {}),
+            "qvix_evidence": qvix_evidence_meta.get(t.qvix, {}),
+            "vintage_ids": {} if selected is None else selected.vintage_ids,
+            "source_impact": {} if selected is None else selected.source_comparisons,
+            "data_lineage": "archived"
+            if t.key in evidence_meta or (selected is not None and selected.vintage_ids)
+            else "current_cache_or_response_not_archived",
+            "freshness_full": freshness(tr.full_date),
+            "freshness_price": freshness(tr.price_date),
+            "return_horizon": "provided_calendar_sessions"
+            if calendar_horizon_verified
+            else "observed_rows_unverified_sessions",
+            "semantics": {
+                "instrument": t.symbol,
+                "instrument_type": t.instrument_type,
+                "price_basis": t.price_basis,
+                "unit": t.unit,
+                "publisher": t.publisher,
+                "qvix_underlying": t.qvix_underlying,
+            },
+        }
+        raw_last = frame["date"].max()
+        for reading, date in (("价格口径", tr.price_date), ("完整口径", tr.full_date)):
+            if date is not None and date < raw_last:
+                tr.notes.append(
+                    f"{reading}仅能计算到 {date.date()}，早于取得价格截止 {raw_last.date()}，不能视作当前读数"
+                )
+                tr.degraded = True
+        if any(tr.audit[k]["status"] == "stale" for k in ("freshness_full", "freshness_price")):
+            tr.degraded = True
+            tr.notes.append("按提供日历计算出的读数已陈旧，即使数据源请求成功也必须降级")
+        if cfg.knowledge_as_of:
+            tr.index_selection_reason = "使用当时已留存并可校验的历史数据版本"
+        if cfg.reference_dir:
+            from .reference import validate_reference
+
+            try:
+                reference_result = validate_reference(
+                    frame,
+                    dict(tr.audit["semantics"], decimal_places=t.price_decimal_places),
+                    cfg.reference_dir / f"{t.symbol}.csv",
+                    cfg.reference_dir / f"{t.symbol}.json",
+                )
+            except (ValueError, OSError, KeyError, TypeError) as exc:
+                reference_result = {"status": "failed", "reasons": [str(exc)]}
+            tr.audit["reference_validation"] = reference_result
+            if reference_result["status"] != "passed":
+                tr.notes.append("本地独立参考未通过或证据不足，读数不可视作已验证市场真值")
+                tr.degraded = True
         if tr.degraded:
             degraded = True
             warnings.extend(f"{t.name}：{n}" for n in tr.notes)
@@ -420,7 +662,7 @@ def run(
         emit(f"      {t.name}：完成（{len(d)} 行序列）")
 
     # 三源失败或收盘后无法确认当天数据时明确降级；离线本身不算失败。
-    if degraded_index:
+    if degraded_index or len(results) < len(cfg.targets):
         degraded = True
 
     # ------------------------------------------------ 4) 输出
@@ -430,10 +672,16 @@ def run(
     for tr in results:
         output_files.extend(report_mod.write_outputs(tr, cfg))
 
-    started_finished = datetime.now()
+    started_finished = datetime.now().astimezone()
     if not results or not any(t.has_price or t.has_full for t in results):
         return RunResult(
-            results, EXIT_NO_DATA, started, started_finished, cfg.data_dir, output_files, warnings,
+            results,
+            EXIT_NO_DATA,
+            started,
+            started_finished,
+            cfg.data_dir,
+            output_files,
+            warnings,
             fetched_online,
         )
 
@@ -441,6 +689,12 @@ def run(
     # 真正的降级来自「QVIX 缺值 / 使用了陈旧缓存 / 某标的算不出来」。
     exit_code = EXIT_DEGRADED if degraded else EXIT_OK
     return RunResult(
-        results, exit_code, started, started_finished, cfg.data_dir, output_files, warnings,
+        results,
+        exit_code,
+        started,
+        started_finished,
+        cfg.data_dir,
+        output_files,
+        warnings,
         fetched_online,
     )

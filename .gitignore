@@ -33,6 +33,9 @@ data/cache/
 data/output/
 data/logs/
 data/_snapshots/
+data/evidence/
+data/audit_inputs/
+data/audit_reports/
 !data/.gitkeep
 
 # ---------- 本地配置与凭据 ----------

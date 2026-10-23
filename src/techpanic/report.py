@@ -61,8 +61,12 @@ def to_frame(tr: TargetResult) -> pd.DataFrame:
     # 加一组「完整口径那一行」的成分列，并标出它对应的日期。
     # 原因：同一张表里 A 行的成分与 B 行的成分**不是同一行数据**
     # （QVIX 滞后时 full 行在更早的日期），只给一列 F 会让复算者对不上号。
-    for cn, en in (("突发性_完整口径", "S"), ("不对称性_完整口径", "A"),
-                   ("前瞻恐惧_完整口径", "F"), ("完整口径数据日", "PI_full")):
+    for cn, en in (
+        ("突发性_完整口径", "S"),
+        ("不对称性_完整口径", "A"),
+        ("前瞻恐惧_完整口径", "F"),
+        ("完整口径数据日", "PI_full"),
+    ):
         if en == "PI_full":
             mask = d["PI_full"].notna()
             col = pd.Series(np.where(mask, d.index.astype(str), ""), index=d.index)
@@ -81,6 +85,17 @@ def to_json_payload(tr: TargetResult, cfg: AppConfig) -> dict:
         anchors = {k: _fmt(row[k], 4) for k in ANCHORS_JSON}
 
     return {
+        "audit": tr.audit,
+        "definition": {
+            "id": "relative_market_stress-v2-audit",
+            "weights": [cfg.index.weight_s, cfg.index.weight_a, cfg.index.weight_f],
+            "ema_span": cfg.index.ema_span,
+            "calibration": cfg.index.level_anchor,
+            "sample_start": str(tr.frame.index.min().date())
+            if tr.frame is not None and len(tr.frame)
+            else None,
+            "sample_observations": len(tr.frame) if tr.frame is not None else 0,
+        },
         "target": tr.target.key,
         "name": tr.target.name,
         "role": tr.target.role,
@@ -141,6 +156,8 @@ def to_json_payload(tr: TargetResult, cfg: AppConfig) -> dict:
 def build_payload(results: list[TargetResult], cfg: AppConfig, exit_code: int) -> dict:
     return {
         "schema": JSON_SCHEMA,
+        "measurement_definition": "relative_market_stress-v2-audit",
+        "financial_validation": "insufficient_evidence",
         "generator": "techpanic",
         "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "exit_code": exit_code,
@@ -207,8 +224,8 @@ def write_run_files(
     payload["elapsed_seconds"] = round(elapsed, 2)
     # 回测（--date）写的是**历史某一天**的读数，不能覆盖代表"当前"的
     # latest.json / badge.json —— 否则跑一次回测就会把 README 徽章改成历史值。
-    if cfg.as_of:
-        stamp = out_dir / f"asof_{cfg.as_of}.json"
+    if cfg.as_of or cfg.knowledge_as_of:
+        stamp = out_dir / (f"asof_{cfg.as_of}.json" if cfg.as_of else "replay.json")
         store.atomic_write_json(payload, stamp)
         written.append(stamp)
         return written
@@ -281,11 +298,11 @@ def write_run_files(
 
 def level_color(level: str) -> str:
     return {
-        "平静": "green",
-        "常态": "blue",
-        "警戒": "yellow",
-        "恐慌": "orange",
-        "极度恐慌": "red",
+        "低位": "green",
+        "中低位": "blue",
+        "中高位": "yellow",
+        "高位": "orange",
+        "极高位": "red",
     }.get(level, "lightgrey")
 
 

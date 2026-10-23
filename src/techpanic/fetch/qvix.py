@@ -80,9 +80,7 @@ QVIX_OHLC: dict[str, tuple[int, int, int, int]] = {
 }
 
 # 向后兼容的 (首个索引, 收盘索引) 视图；新代码请直接用 QVIX_OHLC。
-QVIX_COLUMNS: dict[str, tuple[int, int]] = {
-    k: (c[0], c[3]) for k, c in QVIX_OHLC.items()
-}
+QVIX_COLUMNS: dict[str, tuple[int, int]] = {k: (c[0], c[3]) for k, c in QVIX_OHLC.items()}
 
 MAX_COL_INDEX = max(c[3] for c in QVIX_OHLC.values())
 
@@ -108,6 +106,7 @@ class QvixFetchResult:
     error: str | None = None
     bytes_downloaded: int = 0
     elapsed: float = 0.0
+    vintage_id: str | None = None
 
 
 def parse_wide(text: str, key: str) -> pd.DataFrame:
@@ -152,9 +151,7 @@ def parse_wide(text: str, key: str) -> pd.DataFrame:
 
         # 同行的开/高/低三列也要能解析，供结构不变量检验使用
         try:
-            quad = tuple(
-                float(parts[c].strip().strip('"')) for c in quads
-            )
+            quad = tuple(float(parts[c].strip().strip('"')) for c in quads)
         except (ValueError, IndexError):
             continue
         ohlc_rows.append(quad)  # type: ignore[arg-type]
@@ -188,10 +185,10 @@ def parse_wide(text: str, key: str) -> pd.DataFrame:
 # 两组之间没有重叠，阈值取在中间。
 # ⚠️ 历史注记：早期注释写的是"错位 0.0%~64.9%"与"cyb 0.0093"，
 #    那是把别的窗口/别的位移混进来了，无法复现；已按实际测量改正。
-# 
-OHLC_MIN_ROWS = 100           # 样本行数下限
+#
+OHLC_MIN_ROWS = 100  # 样本行数下限
 OHLC_MIN_SATISFACTION = 0.95  # 不变量满足率下限
-OHLC_MIN_SPREAD = 0.97        # 「high > low」占比下限（挡「4 列其实是同一列/近似列」）
+OHLC_MIN_SPREAD = 0.97  # 「high > low」占比下限（挡「4 列其实是同一列/近似列」）
 
 
 def _assert_ohlc_invariant(
@@ -311,8 +308,8 @@ def assert_structure(text: str, key: str, df: pd.DataFrame) -> None:
 #    阈值按实测标定：正常时两列本该几乎相同（缓存就是上次写入的同一份文件），
 #    中位偏差理应接近 0。因此这里给一个宽松的上限，只拦量级明显不对的情况。
 CROSS_CHECK_MIN_OVERLAP = 100
-CROSS_CHECK_MAX_RATIO = 4.0          # 中位偏差 / 典型日度波动幅度，上限
-CROSS_CHECK_ABS_MEDIAN_CAP = 8.0     # 中位绝对偏差的绝对上限（点）
+CROSS_CHECK_MAX_RATIO = 4.0  # 中位偏差 / 典型日度波动幅度，上限
+CROSS_CHECK_ABS_MEDIAN_CAP = 8.0  # 中位绝对偏差的绝对上限（点）
 
 
 def cross_check_cache(fresh: pd.DataFrame, cached: pd.DataFrame | None, key: str) -> None:
@@ -360,6 +357,8 @@ def download_wide(
     net: NetworkConfig,
     *,
     progress: ProgressFn | None = None,
+    evidence_store=None,
+    evidence_ids: list[str] | None = None,
 ) -> tuple[str, int, float]:
     """下载上游宽表一次（所有 QVIX 标的共用这一次下载）。"""
     client = HttpClient(
@@ -370,6 +369,7 @@ def download_wide(
         jitter=net.jitter,
         proxy=net.proxy,
         user_agent=net.user_agent,
+        evidence_store=evidence_store,
     )
     try:
         resp = client.get_bytes(
@@ -379,6 +379,8 @@ def download_wide(
             total_budget=net.budget_qvix,
         )
         text = resp.content.decode("gbk", errors="replace")
+        if evidence_ids is not None:
+            evidence_ids.extend(client.evidence_ids)
     finally:
         client.close()
     return text, len(resp.content), resp.elapsed
@@ -390,10 +392,17 @@ def fetch_qvix(
     *,
     cache_paths: dict[str, Path] | None = None,
     progress: ProgressFn | None = None,
+    evidence_store=None,
 ) -> dict[str, QvixFetchResult]:
     """一次下载，解析出所需的全部 QVIX 序列。"""
     try:
-        text, nbytes, elapsed = download_wide(net, progress=progress)
+        raw_ids: list[str] = []
+        if evidence_store is None:
+            text, nbytes, elapsed = download_wide(net, progress=progress)
+        else:
+            text, nbytes, elapsed = download_wide(
+                net, progress=progress, evidence_store=evidence_store, evidence_ids=raw_ids
+            )
     except NetworkError as exc:
         return {k: QvixFetchResult(k, None, "none", str(exc)) for k in keys}
 
@@ -404,7 +413,23 @@ def fetch_qvix(
             assert_structure(text, key, df)
             if cache_paths and key in cache_paths:
                 cross_check_cache(df, read_cache(cache_paths[key]), key)
-            out[key] = QvixFetchResult(key, df, "optbbs", None, nbytes, elapsed)
+            vintage_id = None
+            if evidence_store is not None:
+                vintage_id = evidence_store.record_frame(
+                    f"qvix_{key}",
+                    "optbbs",
+                    df,
+                    raw_ids=raw_ids,
+                    semantics={
+                        "instrument": key,
+                        "instrument_type": "third_party_volatility_proxy",
+                        "unit": "annualized_volatility_percent",
+                        "identity_status": "proxy_unverified",
+                        "parser_version": "qvix-v2-audit",
+                        "ohlc_columns": QVIX_OHLC[key],
+                    },
+                )
+            out[key] = QvixFetchResult(key, df, "optbbs", None, nbytes, elapsed, vintage_id)
         except DataQualityError as exc:
             out[key] = QvixFetchResult(key, None, "none", str(exc), nbytes, elapsed)
     return out
